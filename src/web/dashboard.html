@@ -1725,6 +1725,12 @@
 
         phaseEl.className = `agent-pill ${colorClass} ${status}`;
 
+        // Update pill name from state (for PO, TL which have hardcoded HTML)
+        const nameEl = phaseEl.querySelector('.pill-name');
+        if (nameEl && phaseData.name) {
+          nameEl.textContent = phaseData.name;
+        }
+
         const statusEl = phaseEl.querySelector('.agent-status');
         if (statusEl) {
           if (status === 'running') {
