@@ -27,6 +27,8 @@
       --dev-bg: rgba(96, 165, 250, 0.15);
       --qa-color: #fbbf24;
       --qa-bg: rgba(251, 191, 36, 0.15);
+      --reviewer-color: #22d3ee;
+      --reviewer-bg: rgba(34, 211, 238, 0.15);
       --success: #22c55e;
       --error: #ef4444;
       --warning: #f59e0b;
@@ -43,7 +45,7 @@
     .header {
       background: linear-gradient(135deg, #1a1a2e 0%, #16162a 100%);
       border-bottom: 1px solid var(--border);
-      padding: 1.5rem 2rem;
+      padding: 0.875rem 2rem;
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -125,9 +127,9 @@
     /* Main Layout */
     .main {
       display: grid;
-      grid-template-columns: 1fr 400px;
-      gap: 1.5rem;
-      padding: 1.5rem 2rem;
+      grid-template-columns: 1fr 380px;
+      gap: 1rem;
+      padding: 1rem 1.5rem;
       max-width: 1600px;
       margin: 0 auto;
     }
@@ -157,113 +159,203 @@
     }
 
     .card-body {
-      padding: 1.25rem;
+      padding: 1rem;
+    }
+
+    /* Left column layout */
+    .left-column {
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+      min-width: 0;
     }
 
     /* Progress Section */
     .progress-section {
-      margin-bottom: 1.5rem;
+      /* no extra margin needed — .left-column gap handles spacing */
     }
 
     .requirement-text {
-      font-size: 1rem;
+      font-size: 0.875rem;
       color: var(--text-secondary);
-      margin-bottom: 1rem;
-      padding: 1rem;
+      margin-bottom: 0.75rem;
+      padding: 0.75rem 1rem;
       background: rgba(255,255,255,0.03);
       border-radius: 8px;
       border-left: 3px solid var(--dev-color);
+      line-height: 1.4;
     }
 
-    /* Agent Progress Bar */
-    .agent-progress {
+    /* ─── Pipeline Layout ─────────────────────────────────────────── */
+
+    /* PO + TL top strip */
+    .po-tl-strip {
       display: flex;
       gap: 0.5rem;
-      margin-bottom: 2rem;
+      margin-bottom: 0.75rem;
     }
 
-    .agent-phase {
+    .po-tl-strip .agent-pill {
       flex: 1;
+    }
+
+    /* Pipeline 3-column row */
+    .pipeline-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 0;
+    }
+
+    .pipeline-group {
+      flex: 1;
+      min-width: 0;
+      background: rgba(255, 255, 255, 0.02);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      overflow: hidden;
+    }
+
+    .pipeline-group-header {
+      padding: 0.45rem 0.75rem;
+      font-size: 0.68rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+
+    .pipeline-group-header.dev      { color: var(--dev-color);      background: rgba(96, 165, 250, 0.05); }
+    .pipeline-group-header.reviewer { color: var(--reviewer-color); background: rgba(34, 211, 238, 0.05); }
+    .pipeline-group-header.qa       { color: var(--qa-color);       background: rgba(251, 191, 36,  0.05); }
+
+    .pipeline-group-body {
+      padding: 0.4rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.3rem;
+      min-height: 52px;
+    }
+
+    .pipeline-arrow {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      flex-shrink: 0;
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      padding-top: 1.75rem;
+    }
+
+    .pipeline-empty {
       text-align: center;
-      padding: 1rem 0.5rem;
-      border-radius: 12px;
-      transition: all 0.3s ease;
+      font-size: 0.68rem;
+      color: var(--text-muted);
+      padding: 0.75rem 0;
+    }
+
+    /* ─── Agent Pill ───────────────────────────────────────────────── */
+
+    .agent-pill {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.45rem 0.6rem;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background 0.2s ease, border-color 0.2s ease;
+      border: 1px solid transparent;
       position: relative;
       overflow: hidden;
-      cursor: pointer;
     }
 
-    .agent-phase:hover {
-      filter: brightness(1.15);
-      transform: translateY(-2px);
+    .agent-pill:hover {
+      background: rgba(255, 255, 255, 0.06) !important;
+      border-color: rgba(255, 255, 255, 0.14) !important;
     }
 
-    .agent-phase::before {
-      content: '';
-      position: absolute;
-      inset: 0;
-      opacity: 0.1;
-      transition: opacity 0.3s ease;
-    }
-
-    .agent-phase.pending {
+    .agent-pill.pending {
       background: var(--bg-card);
-      border: 1px dashed var(--border);
+      border-color: var(--border);
     }
 
-    .agent-phase.running {
-      border: none;
+    .agent-pill.po.running       { background: var(--po-bg);       border-color: rgba(192,132,252,0.35); }
+    .agent-pill.tl.running       { background: var(--tl-bg);       border-color: rgba(74, 222,128,0.35); }
+    .agent-pill.dev.running      { background: var(--dev-bg);      border-color: rgba(96, 165,250,0.35); }
+    .agent-pill.reviewer.running { background: var(--reviewer-bg); border-color: rgba(34, 211,238,0.35); }
+    .agent-pill.qa.running       { background: var(--qa-bg);       border-color: rgba(251,191, 36,0.35); }
+
+    .agent-pill.complete         { opacity: 0.8; }
+    .agent-pill.po.complete       { background: rgba(192,132,252,0.07); border-color: rgba(192,132,252,0.2); }
+    .agent-pill.tl.complete       { background: rgba(74, 222,128,0.07); border-color: rgba(74, 222,128,0.2); }
+    .agent-pill.dev.complete      { background: rgba(96, 165,250,0.07); border-color: rgba(96, 165,250,0.2); }
+    .agent-pill.reviewer.complete { background: rgba(34, 211,238,0.07); border-color: rgba(34, 211,238,0.2); }
+    .agent-pill.qa.complete       { background: rgba(251,191, 36,0.07); border-color: rgba(251,191, 36,0.2); }
+
+    .pill-icon {
+      font-size: 0.9rem;
+      flex-shrink: 0;
+      width: 20px;
+      text-align: center;
     }
 
-    .agent-phase.running::before {
-      opacity: 0.2;
-      animation: shimmer 2s infinite;
+    .pill-info {
+      flex: 1;
+      min-width: 0;
     }
 
-    @keyframes shimmer {
-      0% { background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent); }
-      100% { background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent); transform: translateX(100%); }
-    }
-
-    .agent-phase.complete {
-      border: none;
-    }
-
-    .agent-phase.po.running, .agent-phase.po.complete { background: var(--po-bg); }
-    .agent-phase.tl.running, .agent-phase.tl.complete { background: var(--tl-bg); }
-    .agent-phase.dev.running, .agent-phase.dev.complete { background: var(--dev-bg); }
-    .agent-phase.qa.running, .agent-phase.qa.complete { background: var(--qa-bg); }
-
-    .agent-icon {
-      font-size: 1.5rem;
-      margin-bottom: 0.5rem;
-    }
-
-    .agent-name {
-      font-size: 0.75rem;
+    .pill-name {
+      font-size: 0.72rem;
       font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      margin-bottom: 0.25rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
-    .agent-phase.po .agent-name { color: var(--po-color); }
-    .agent-phase.tl .agent-name { color: var(--tl-color); }
-    .agent-phase.dev .agent-name { color: var(--dev-color); }
-    .agent-phase.qa .agent-name { color: var(--qa-color); }
+    .agent-pill.po       .pill-name { color: var(--po-color);       }
+    .agent-pill.tl       .pill-name { color: var(--tl-color);       }
+    .agent-pill.dev      .pill-name { color: var(--dev-color);      }
+    .agent-pill.reviewer .pill-name { color: var(--reviewer-color); }
+    .agent-pill.qa       .pill-name { color: var(--qa-color);       }
 
-    .agent-status {
-      font-size: 0.7rem;
+    /* agent-status is still queried by renderPhaseProgress JS */
+    .pill-status {
+      font-size: 0.63rem;
       color: var(--text-muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      line-height: 1.3;
     }
 
-    .agent-phase.running .agent-status {
-      color: var(--text-secondary);
+    .agent-pill.running  .pill-status { color: var(--text-secondary); }
+    .agent-pill.complete .pill-status { color: var(--success);        }
+
+    .pill-duration {
+      font-size: 0.63rem;
+      color: var(--text-muted);
+      font-family: monospace;
+      flex-shrink: 0;
     }
 
-    .agent-phase.complete .agent-status {
-      color: var(--success);
+    .pill-indicator {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--border);
+      flex-shrink: 0;
     }
+
+    .agent-pill.running       .pill-indicator { animation: pulse 1.5s infinite; }
+    .agent-pill.po.running       .pill-indicator { background: var(--po-color);       }
+    .agent-pill.tl.running       .pill-indicator { background: var(--tl-color);       }
+    .agent-pill.dev.running      .pill-indicator { background: var(--dev-color);      }
+    .agent-pill.reviewer.running .pill-indicator { background: var(--reviewer-color); }
+    .agent-pill.qa.running       .pill-indicator { background: var(--qa-color);       }
+    .agent-pill.complete         .pill-indicator { background: var(--success);        }
 
     /* Spinner */
     .spinner {
@@ -276,68 +368,6 @@
       to { transform: rotate(360deg); }
     }
 
-    /* Phase Details */
-    .phase-details {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 1rem;
-    }
-
-    .phase-card {
-      background: var(--bg-dark);
-      border-radius: 12px;
-      padding: 1rem;
-      border: 1px solid var(--border);
-      transition: all 0.3s ease;
-      cursor: pointer;
-    }
-
-    .phase-card:hover {
-      border-color: rgba(255,255,255,0.15);
-      background: #151525;
-      transform: translateY(-1px);
-      box-shadow: 0 4px 16px rgba(0,0,0,0.3);
-    }
-
-    .phase-card.active {
-      border-color: var(--dev-color);
-      box-shadow: 0 0 20px rgba(96, 165, 250, 0.1);
-    }
-
-    .phase-card-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 0.75rem;
-    }
-
-    .phase-card-title {
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-      font-weight: 600;
-      font-size: 0.875rem;
-    }
-
-    .phase-card.po .phase-card-title { color: var(--po-color); }
-    .phase-card.tl .phase-card-title { color: var(--tl-color); }
-    .phase-card.dev .phase-card-title { color: var(--dev-color); }
-    .phase-card.qa .phase-card-title { color: var(--qa-color); }
-
-    .phase-duration {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-    }
-
-    .phase-output {
-      font-size: 0.75rem;
-      color: var(--text-secondary);
-      max-height: 80px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
     /* Kanban Board */
     .kanban {
       display: grid;
@@ -348,8 +378,8 @@
     .kanban-column {
       background: var(--bg-dark);
       border-radius: 10px;
-      padding: 0.75rem;
-      min-height: 150px;
+      padding: 0.625rem;
+      min-height: 100px;
     }
 
     .kanban-header {
@@ -430,6 +460,7 @@
     .log-agent.po { color: var(--po-color); }
     .log-agent.tl { color: var(--tl-color); }
     .log-agent.dev { color: var(--dev-color); }
+    .log-agent.reviewer { color: var(--reviewer-color); }
     .log-agent.qa { color: var(--qa-color); }
 
     .log-message {
@@ -504,7 +535,7 @@
       pointer-events: none;
     }
 
-    /* QA verdict indicator on phase-card */
+    /* QA verdict indicator on pill */
     .verdict-pass {
       color: var(--success);
       font-size: 0.7rem;
@@ -585,6 +616,7 @@
     .detail-icon-wrap.po { background: var(--po-bg); }
     .detail-icon-wrap.tl { background: var(--tl-bg); }
     .detail-icon-wrap.dev { background: var(--dev-bg); }
+    .detail-icon-wrap.reviewer { background: var(--reviewer-bg); }
     .detail-icon-wrap.qa { background: var(--qa-bg); }
 
     .detail-agent-name {
@@ -761,6 +793,12 @@
       color: var(--tl-color);
     }
 
+    .detail-current-action.reviewer {
+      background: rgba(34, 211, 238, 0.06);
+      border-color: rgba(34, 211, 238, 0.2);
+      color: var(--reviewer-color);
+    }
+
     .detail-current-action.qa {
       background: rgba(251, 191, 36, 0.06);
       border-color: rgba(251, 191, 36, 0.2);
@@ -870,6 +908,7 @@
     .timeline-dot.po { border-color: var(--po-color); background: rgba(192,132,252,0.3); }
     .timeline-dot.tl { border-color: var(--tl-color); background: rgba(74,222,128,0.3); }
     .timeline-dot.dev { border-color: var(--dev-color); background: rgba(96,165,250,0.3); }
+    .timeline-dot.reviewer { border-color: var(--reviewer-color); background: rgba(34,211,238,0.3); }
     .timeline-dot.qa { border-color: var(--qa-color); background: rgba(251,191,36,0.3); }
 
     .timeline-dot.active {
@@ -975,10 +1014,6 @@
       .main {
         grid-template-columns: 1fr;
       }
-
-      .phase-details {
-        grid-template-columns: 1fr;
-      }
     }
 
     @media (max-width: 768px) {
@@ -988,8 +1023,15 @@
         text-align: center;
       }
 
-      .agent-progress {
+      .pipeline-row {
         flex-direction: column;
+      }
+
+      .pipeline-arrow {
+        padding-top: 0;
+        transform: rotate(90deg);
+        width: 100%;
+        height: 20px;
       }
 
       .kanban {
@@ -1029,44 +1071,50 @@
             No sprint running. Start a sprint from the CLI to see progress here.
           </div>
 
-          <!-- Agent Progress — po + tl static, dev agents injected dynamically, qa static -->
-          <div class="agent-progress" id="agentProgress">
-            <div class="agent-phase pending po" id="phase-po" onclick="openAgentDetail('po')" title="Click to view details">
-              <div class="agent-icon">📋</div>
-              <div class="agent-name">Product Owner</div>
-              <div class="agent-status">Pending</div>
+          <!-- PO + TL strip -->
+          <div class="po-tl-strip">
+            <div class="agent-pill pending po" id="phase-po" onclick="openAgentDetail('po')" title="Click to view details">
+              <span class="pill-icon">📋</span>
+              <div class="pill-info">
+                <div class="pill-name">Product Owner</div>
+                <div class="pill-status agent-status">Pending</div>
+              </div>
+              <span class="pill-duration" id="duration-po"></span>
+              <span class="pill-indicator"></span>
             </div>
-            <div class="agent-phase pending tl" id="phase-tl" onclick="openAgentDetail('tl')" title="Click to view details">
-              <div class="agent-icon">🏗️</div>
-              <div class="agent-name">Tech Lead</div>
-              <div class="agent-status">Pending</div>
+            <div class="agent-pill pending tl" id="phase-tl" onclick="openAgentDetail('tl')" title="Click to view details">
+              <span class="pill-icon">🏗️</span>
+              <div class="pill-info">
+                <div class="pill-name">Tech Lead</div>
+                <div class="pill-status agent-status">Pending</div>
+              </div>
+              <span class="pill-duration" id="duration-tl"></span>
+              <span class="pill-indicator"></span>
             </div>
-            <!-- dev agents injected here by JS on team:setup -->
-            <div id="devAgentsProgress" style="display:contents"></div>
-            <!-- QA agents injected here by JS on qa-team:setup -->
-            <div id="qaAgentsProgress" style="display:contents"></div>
           </div>
 
-          <!-- Phase Details — po + tl static, dev + QA dynamic -->
-          <div class="phase-details" id="phaseDetails">
-            <div class="phase-card po" id="card-po" onclick="openAgentDetail('po')" title="Click to view details">
-              <div class="phase-card-header">
-                <div class="phase-card-title">📋 Product Owner</div>
-                <div class="phase-duration" id="duration-po">-</div>
+          <!-- Pipeline: Dev → Reviewer → QA -->
+          <div class="pipeline-row">
+            <div class="pipeline-group">
+              <div class="pipeline-group-header dev">💻 Developer</div>
+              <div class="pipeline-group-body" id="devAgentsProgress">
+                <div class="pipeline-empty">Awaiting setup…</div>
               </div>
-              <div class="phase-output" id="output-po">Waiting...</div>
             </div>
-            <div class="phase-card tl" id="card-tl" onclick="openAgentDetail('tl')" title="Click to view details">
-              <div class="phase-card-header">
-                <div class="phase-card-title">🏗️ Tech Lead</div>
-                <div class="phase-duration" id="duration-tl">-</div>
+            <div class="pipeline-arrow">→</div>
+            <div class="pipeline-group">
+              <div class="pipeline-group-header reviewer">🔍 Reviewer</div>
+              <div class="pipeline-group-body" id="reviewerAgentsProgress">
+                <div class="pipeline-empty">Awaiting setup…</div>
               </div>
-              <div class="phase-output" id="output-tl">Waiting...</div>
             </div>
-            <!-- dev cards injected here -->
-            <div id="devCardsContainer" style="display:contents"></div>
-            <!-- QA cards injected here -->
-            <div id="qaCardsContainer" style="display:contents"></div>
+            <div class="pipeline-arrow">→</div>
+            <div class="pipeline-group">
+              <div class="pipeline-group-header qa">🧪 QA</div>
+              <div class="pipeline-group-body" id="qaAgentsProgress">
+                <div class="pipeline-empty">Awaiting setup…</div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -1216,6 +1264,7 @@
       phases: {},
       phaseOrder: ['po', 'tl'],
       devAgents: [],
+      reviewerAgents: [],
       qaAgents: [],
       kanban: { backlog: [], inProgress: [], review: [], done: [] },
       logs: [],
@@ -1271,6 +1320,14 @@
           state.phases = data.state.phases;
           state.phaseOrder = data.state.phaseOrder;
           renderDevAgents(data.devAgents);
+          renderPhaseProgress();
+          break;
+
+        case 'reviewer-team:setup':
+          state.reviewerAgents = data.reviewerAgents;
+          state.phases = data.state.phases;
+          state.phaseOrder = data.state.phaseOrder;
+          renderReviewerAgents(data.reviewerAgents);
           renderPhaseProgress();
           break;
 
@@ -1378,6 +1435,22 @@
           pairing: null,
         };
       }
+      if (key.startsWith('reviewer-')) {
+        const agentData = (state.reviewerAgents || []).find(a => a.key === key);
+        const devResult = agentData?.devResult;
+        const devTask = devResult?.task;
+        return {
+          icon: '🔍',
+          name: agentData?.name || key,
+          colorClass: 'reviewer',
+          role: 'Code Reviewer',
+          task: devTask
+            ? { title: 'Review: ' + (devTask.title || devTask), desc: devTask.description || '' }
+            : { title: 'Code Review', desc: 'Review implementation for bugs, security, performance and best practices' },
+          pairing: devResult?.key ? `Reviewing ${devResult.key}` : null,
+        };
+      }
+
       if (key.startsWith('qa-')) {
         const agentData = (state.qaAgents || []).find(a => a.key === key);
         const devResult = agentData?.devResult;
@@ -1585,8 +1658,9 @@
       document.getElementById('requirementText').textContent =
         state.requirement || 'No sprint running';
       updateStatus(state.status);
-      if (state.devAgents && state.devAgents.length > 0) renderDevAgents(state.devAgents);
-      if (state.qaAgents  && state.qaAgents.length  > 0) renderQaAgents(state.qaAgents);
+      if (state.devAgents      && state.devAgents.length      > 0) renderDevAgents(state.devAgents);
+      if (state.reviewerAgents && state.reviewerAgents.length > 0) renderReviewerAgents(state.reviewerAgents);
+      if (state.qaAgents       && state.qaAgents.length       > 0) renderQaAgents(state.qaAgents);
       renderPhaseProgress();
       renderKanban();
       renderActivityLog();
@@ -1595,50 +1669,32 @@
 
     function renderDevAgents(devAgents) {
       const progressSlot = document.getElementById('devAgentsProgress');
-      const cardsSlot = document.getElementById('devCardsContainer');
-
       progressSlot.innerHTML = devAgents.map(agent => `
-        <div class="agent-phase pending dev" id="phase-${agent.key}"
+        <div class="agent-pill pending dev" id="phase-${agent.key}"
              onclick="openAgentDetail('${escapeAttr(agent.key)}')" title="Click to view details">
-          <div class="agent-icon">💻</div>
-          <div class="agent-name">${escapeHtml(agent.name)}</div>
-          <div class="agent-status">Pending</div>
-        </div>
-      `).join('');
-
-      cardsSlot.innerHTML = devAgents.map(agent => `
-        <div class="phase-card dev" id="card-${agent.key}"
-             onclick="openAgentDetail('${escapeAttr(agent.key)}')" title="Click to view details">
-          <div class="phase-card-header">
-            <div class="phase-card-title">💻 ${escapeHtml(agent.name)}</div>
-            <div class="phase-duration" id="duration-${agent.key}">-</div>
+          <span class="pill-icon">💻</span>
+          <div class="pill-info">
+            <div class="pill-name">${escapeHtml(agent.name)}</div>
+            <div class="pill-status agent-status">Pending</div>
           </div>
-          <div class="phase-output" id="output-${agent.key}">Waiting...</div>
+          <span class="pill-duration" id="duration-${agent.key}"></span>
+          <span class="pill-indicator"></span>
         </div>
       `).join('');
     }
 
     function renderQaAgents(qaAgents) {
       const progressSlot = document.getElementById('qaAgentsProgress');
-      const cardsSlot    = document.getElementById('qaCardsContainer');
-
       progressSlot.innerHTML = qaAgents.map(agent => `
-        <div class="agent-phase pending qa" id="phase-${agent.key}"
+        <div class="agent-pill pending qa" id="phase-${agent.key}"
              onclick="openAgentDetail('${escapeAttr(agent.key)}')" title="Click to view details">
-          <div class="agent-icon">🧪</div>
-          <div class="agent-name">${escapeHtml(agent.name)}</div>
-          <div class="agent-status">Pending</div>
-        </div>
-      `).join('');
-
-      cardsSlot.innerHTML = qaAgents.map(agent => `
-        <div class="phase-card qa" id="card-${agent.key}"
-             onclick="openAgentDetail('${escapeAttr(agent.key)}')" title="Click to view details">
-          <div class="phase-card-header">
-            <div class="phase-card-title">🧪 ${escapeHtml(agent.name)}</div>
-            <div class="phase-duration" id="duration-${agent.key}">-</div>
+          <span class="pill-icon">🧪</span>
+          <div class="pill-info">
+            <div class="pill-name">${escapeHtml(agent.name)}</div>
+            <div class="pill-status agent-status">Pending</div>
           </div>
-          <div class="phase-output" id="output-${agent.key}">Waiting...</div>
+          <span class="pill-duration" id="duration-${agent.key}"></span>
+          <span class="pill-indicator"></span>
         </div>
       `).join('');
     }
@@ -1648,52 +1704,44 @@
       const phases = state.phaseOrder || ['po', 'tl', ...devKeys];
 
       phases.forEach((phase) => {
-        const phaseEl = document.getElementById(`phase-${phase}`);
-        const cardEl = document.getElementById(`card-${phase}`);
-        const outputEl = document.getElementById(`output-${phase}`);
+        const phaseEl   = document.getElementById(`phase-${phase}`);
         const durationEl = document.getElementById(`duration-${phase}`);
 
-        if (!phaseEl || !cardEl) return;
+        if (!phaseEl) return;
 
         const phaseData = state.phases[phase] || {};
         const status = phaseData.status || 'pending';
-        const isCurrent = state.currentPhase === phase;
 
-        const colorClass = phase.startsWith('dev-') ? 'dev'
-                         : phase.startsWith('qa-')  ? 'qa'
+        const colorClass = phase.startsWith('dev-')      ? 'dev'
+                         : phase.startsWith('reviewer-') ? 'reviewer'
+                         : phase.startsWith('qa-')       ? 'qa'
                          : phase;
-        phaseEl.className = `agent-phase ${colorClass} ${status}`;
+
+        phaseEl.className = `agent-pill ${colorClass} ${status}`;
 
         const statusEl = phaseEl.querySelector('.agent-status');
-        const phaseLabel = phaseData.currentPhaseLabel || '';
-        if (status === 'running') {
-          const fixRound = phaseData.fixRound || 0;
-          const label = fixRound > 0 ? `Fixing (round ${fixRound + 1})` : 'Working...';
-          statusEl.innerHTML = `<span class="spinner">⏳</span> ${label}`;
-        } else if (status === 'complete') {
-          statusEl.textContent = '✓ Complete';
-          // Remove fix badge once complete
-          const badge = phaseEl.querySelector('.fix-badge');
-          if (badge) badge.remove();
-        } else {
-          statusEl.textContent = 'Pending';
+        if (statusEl) {
+          if (status === 'running') {
+            const fixRound = phaseData.fixRound || 0;
+            const label = fixRound > 0 ? `Fixing (round ${fixRound + 1})` : 'Working…';
+            statusEl.innerHTML = `<span class="spinner">⏳</span> ${label}`;
+          } else if (status === 'complete') {
+            statusEl.textContent = '✓ Done';
+            // Remove fix badge once complete
+            const badge = phaseEl.querySelector('.fix-badge');
+            if (badge) badge.remove();
+          } else {
+            statusEl.textContent = 'Pending';
+          }
         }
-
-        const colorCardClass = phase.startsWith('dev-') ? 'dev'
-                             : phase.startsWith('qa-')  ? 'qa'
-                             : phase;
-        cardEl.className = `phase-card ${colorCardClass}${isCurrent ? ' active' : ''}`;
-
-        const output = phaseData.output || '';
-        if (outputEl) outputEl.textContent = output.slice(0, 150) + (output.length > 150 ? '...' : '');
 
         if (durationEl) {
           if (phaseData.duration) {
             durationEl.textContent = formatDuration(phaseData.duration);
           } else if (status === 'running') {
-            durationEl.textContent = 'Running...';
+            durationEl.textContent = '';
           } else {
-            durationEl.textContent = '-';
+            durationEl.textContent = '';
           }
         }
       });
@@ -1742,8 +1790,9 @@
         const time = log.timestamp ? log.timestamp.slice(11, 19) : '';
         const raw = (log.agent || '').toLowerCase();
         // Map dynamic agent keys to color class
-        const agentColorClass = raw.startsWith('dev-') ? 'dev'
-                               : raw.startsWith('qa-') ? 'qa'
+        const agentColorClass = raw.startsWith('dev-')      ? 'dev'
+                               : raw.startsWith('reviewer-') ? 'reviewer'
+                               : raw.startsWith('qa-')       ? 'qa'
                                : raw;
         const decisionHtml = log.decision
           ? `<div class="log-decision">→ ${escapeHtml(log.decision)}</div>`
@@ -1759,6 +1808,23 @@
     }
 
     // ── Escape Helpers ────────────────────────────────────────────────────────
+
+    // สร้าง HTML elements สำหรับ reviewer agents แบบ dynamic
+    function renderReviewerAgents(reviewerAgents) {
+      const progressSlot = document.getElementById('reviewerAgentsProgress');
+      progressSlot.innerHTML = reviewerAgents.map(agent => `
+        <div class="agent-pill pending reviewer" id="phase-${agent.key}"
+             onclick="openAgentDetail('${escapeAttr(agent.key)}')" title="Click to view details">
+          <span class="pill-icon">🔍</span>
+          <div class="pill-info">
+            <div class="pill-name">${escapeHtml(agent.name)}</div>
+            <div class="pill-status agent-status">Pending</div>
+          </div>
+          <span class="pill-duration" id="duration-${agent.key}"></span>
+          <span class="pill-indicator"></span>
+        </div>
+      `).join('');
+    }
 
     function escapeHtml(str) {
       return String(str).replace(/[&<>"']/g, c =>

@@ -33,8 +33,9 @@ let sprintState = {
   completedAt: null,
   currentPhase: null,
   devAgents: [],
+  reviewerAgents: [],
   qaAgents: [],
-  phaseOrder: ['po', 'tl'],  // dev + QA agents insert หลัง tl แบบ dynamic
+  phaseOrder: ['po', 'tl'],  // dev → reviewer → QA agents insert แบบ dynamic
   phases: makeInitialPhases(),
   kanban: { backlog: [], inProgress: [], review: [], done: [] },
   logs: [],
@@ -124,6 +125,7 @@ export function resetState(requirement, mode) {
     completedAt: null,
     currentPhase: null,
     devAgents: [],
+    reviewerAgents: [],
     qaAgents: [],
     phaseOrder: ['po', 'tl'],
     phases: makeInitialPhases(),
@@ -158,8 +160,24 @@ export function createWebProgressHandler() {
         break;
       }
 
+      case 'reviewer-team:setup': {
+        // Reviewer agents เพิ่มหลัง dev agents ใน phaseOrder
+        sprintState.reviewerAgents = event.reviewerAgents;
+        event.reviewerAgents.forEach(({ key, name }) => {
+          if (!sprintState.phases[key]) {
+            sprintState.phases[key] = {
+              status: 'pending', output: '', startTime: null, duration: 0,
+              name, fixRound: 0,
+            };
+            sprintState.phaseOrder.push(key);
+          }
+        });
+        broadcast({ type: 'reviewer-team:setup', reviewerAgents: event.reviewerAgents, state: sprintState });
+        break;
+      }
+
       case 'qa-team:setup': {
-        // QA agents เพิ่มต่อท้าย phaseOrder (หลัง dev agents)
+        // QA agents เพิ่มต่อท้าย phaseOrder (หลัง reviewer agents)
         sprintState.qaAgents = event.qaAgents;
         event.qaAgents.forEach(({ key, name }) => {
           if (!sprintState.phases[key]) {

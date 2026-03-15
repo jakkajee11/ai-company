@@ -7,13 +7,16 @@
 
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
-import { callAgent, runDevAgent, runDevAgentForTask, runDevFixForTask, parseQaVerdict, AGENTS } from './agents.js';
+import { callAgent, runDevAgent, runDevAgentForTask, runDevFixForTask, parseQaVerdict, parseReviewerVerdict, AGENTS } from './agents.js';
 
 // จำนวน dev สูงสุดที่รันพร้อมกันได้ — ตั้งผ่าน MAX_DEVS env var, default = ตามจำนวน tasks
 const MAX_PARALLEL_DEVS = parseInt(process.env.MAX_DEVS) || Infinity;
 
 // จำนวนรอบสูงสุดที่ QA ส่งงานกลับให้ Dev แก้ได้ — ตั้งผ่าน MAX_QA_CYCLES env var
 const MAX_QA_CYCLES = parseInt(process.env.MAX_QA_CYCLES) || 2;
+
+// จำนวนรอบสูงสุดที่ Reviewer ส่งงานกลับให้ Dev แก้ได้ — ตั้งผ่าน MAX_REVIEW_CYCLES env var
+const MAX_REVIEW_CYCLES = parseInt(process.env.MAX_REVIEW_CYCLES) || 2;
 
 // ─── Sprint runner ─────────────────────────────────────────────────────────────
 
@@ -43,7 +46,8 @@ export async function runSprint(requirement, opts = {}) {
       done: [],
     },
     outputs: {},
-    fixCycles: [], // บันทึกรอบที่ QA ส่งงานกลับ: [{ devKey, qaKey, round, issues }]
+    reviewCycles: [], // บันทึกรอบที่ Reviewer ส่งงานกลับ: [{ reviewerKey, devKey, round, issues }]
+    fixCycles: [],   // บันทึกรอบที่ QA ส่งงานกลับ: [{ qaKey, devKey, round, issues }]
   };
 
   // Notify progress bar to initialize
@@ -160,10 +164,144 @@ export async function runSprint(requirement, opts = {}) {
   sprint.outputs.dev = devResults.reduce((acc, { key, output }) => ({ ...acc, [key]: output }), {});
   moveCard(devTaskIds, 'review');
 
-  // ── Phase 4: QA — 1 QA per dev, with feedback loop back to Dev ──────────────
-  const qaAgents = devResults.map((result, i) => ({
-    key: `qa-${i}`,
+  // ── Phase 4: Code Review — 1 reviewer per dev, parallel ──────────────────────
+  const reviewerAgents = devResults.map((result, i) => ({
+    key: `reviewer-${i}`,
     name: devResults.length > 1
+      ? `Reviewer ${i + 1}: ${result.task.title.slice(0, 20)}`
+      : 'Code Reviewer',
+    devResult: result,
+  }));
+
+  // แจ้งทุก layer ก่อนเริ่ม Review phase
+  onProgress({ type: 'reviewer-team:setup', reviewerAgents });
+  sprintLog('reviewer',
+    `Code review team: ${reviewerAgents.length} reviewer(s) running in parallel`,
+    reviewerAgents.map(a => a.name).join(', ')
+  );
+
+  // ── Reviewer ↔ Dev feedback loop — each reviewer runs in parallel ────────────
+  const reviewResults = await Promise.all(
+    reviewerAgents.map(async ({ key: reviewerKey, devResult }) => {
+      const devKey = devResult.key;
+      let currentDevOutput = devResult.output;
+      let reviewOutput = '';
+      let verdict = { passed: false, issues: [], notes: '' };
+      let reviewRound = 0;
+
+      while (reviewRound <= MAX_REVIEW_CYCLES) {
+        reviewRound++;
+        const isFirstRound = reviewRound === 1;
+        const isFinalRound = reviewRound > MAX_REVIEW_CYCLES;
+
+        // ── Code Review ──
+        onProgress({
+          type: 'phase',
+          agent: reviewerKey,
+          phase: isFirstRound
+            ? `Reviewing: ${devResult.task.title.slice(0, 30)}`
+            : `Re-reviewing (round ${reviewRound}): ${devResult.task.title.slice(0, 22)}`,
+        });
+        sprintLog(reviewerKey,
+          isFirstRound
+            ? `Code review: ${devResult.task.title}`
+            : `Re-reviewing after fixes (round ${reviewRound}): ${devResult.task.title}`,
+          'Checking: requirements, bugs, security, performance, resource management, best practices'
+        );
+
+        const reviewContext = mode === 'simulate'
+          ? `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}\n\nNote: Simulation mode — review the implementation plan.`
+          : `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}\n\nImplementation:\n${currentDevOutput}`;
+
+        reviewOutput = await callAgent('reviewer', reviewContext);
+        verdict = parseReviewerVerdict(reviewOutput);
+        onProgress({ type: 'output', agent: reviewerKey, content: reviewOutput });
+
+        if (verdict.passed) {
+          sprintLog(reviewerKey,
+            `✓ Review PASSED (round ${reviewRound})`,
+            isFirstRound ? 'Code approved — forwarding to QA' : `Approved after ${reviewRound - 1} fix round(s)`
+          );
+          break;
+        }
+
+        // Review FAILED
+        sprintLog(reviewerKey,
+          `✗ Review FAILED — ${verdict.issues.length} issue(s) found (round ${reviewRound})`,
+          verdict.issues.slice(0, 3).join(' | ')
+        );
+
+        if (isFinalRound) {
+          sprintLog(reviewerKey,
+            `⚠ Max review cycles (${MAX_REVIEW_CYCLES}) reached — forwarding to QA with known issues`,
+            `Unresolved: ${verdict.issues.length} issue(s)`
+          );
+          break;
+        }
+
+        // ── Send back to Dev for fixes ────────────────────────────────────────
+        sprint.reviewCycles.push({ reviewerKey, devKey, round: reviewRound, issues: verdict.issues });
+
+        sprintLog(devKey,
+          `Received ${verdict.issues.length} review issue(s) to fix (round ${reviewRound})`,
+          verdict.issues.map((issue, i) => `${i + 1}. ${issue}`).join(' | ')
+        );
+
+        moveCard([devResult.task.id], 'inProgress');
+        onProgress({
+          type: 'phase',
+          agent: devKey,
+          phase: `Fixing review issues (round ${reviewRound}): ${devResult.task.title.slice(0, 20)}`,
+        });
+
+        currentDevOutput = await runDevFixForTask(
+          devResult.task,
+          currentDevOutput,
+          verdict.issues,
+          devResult.taskDir,
+          {
+            mode,
+            agentKey: devKey,
+            sprintLog: (msg, decision) => sprintLog(devKey, msg, decision),
+          }
+        );
+
+        onProgress({ type: 'output', agent: devKey, content: currentDevOutput });
+        sprintLog(devKey,
+          `Review fixes applied (round ${reviewRound}) — returning to reviewer`,
+          `Fixed ${verdict.issues.length} issue(s)`
+        );
+
+        sprint.outputs.dev[devKey] = currentDevOutput;
+        moveCard([devResult.task.id], 'review');
+      } // end while
+
+      return {
+        key: reviewerKey, devResult, reviewOutput, reviewRound,
+        passed: verdict.passed, finalDevOutput: currentDevOutput,
+      };
+    })
+  );
+
+  sprint.outputs.review = reviewResults.reduce(
+    (acc, { key, reviewOutput }) => ({ ...acc, [key]: reviewOutput }), {}
+  );
+  sprint.outputs.reviewStats = reviewResults.reduce(
+    (acc, { key, reviewRound, passed }) => ({ ...acc, [key]: { rounds: reviewRound, passed } }), {}
+  );
+
+  // สร้าง devResults ที่อัพเดตแล้วสำหรับ QA (output อาจเปลี่ยนหลัง review cycles)
+  const reviewedDevResults = devResults.map(result => {
+    const rr = reviewResults.find(r => r.devResult.key === result.key);
+    return (rr && rr.finalDevOutput !== result.output)
+      ? { ...result, output: rr.finalDevOutput }
+      : result;
+  });
+
+  // ── Phase 5: QA — 1 QA per dev, with feedback loop back to Dev ──────────────
+  const qaAgents = reviewedDevResults.map((result, i) => ({
+    key: `qa-${i}`,
+    name: reviewedDevResults.length > 1
       ? `QA ${i + 1}: ${result.task.title.slice(0, 22)}`
       : 'QA Engineer',
     devResult: result,
@@ -343,6 +481,29 @@ function saveSprint(sprint, outputDir) {
 }
 
 function buildMarkdownLog(sprint) {
+  // ── Review summary line ──────────────────────────────────────────────────────
+  const reviewStatsSummary = sprint.outputs.reviewStats
+    ? Object.entries(sprint.outputs.reviewStats).map(([key, s]) =>
+        `${key}: ${s.passed ? '✓ PASSED' : '✗ FAILED'} in ${s.rounds} round(s)`
+      ).join(', ')
+    : null;
+
+  // ── Review cycles section ────────────────────────────────────────────────────
+  const reviewCycleLines = [];
+  if (sprint.reviewCycles && sprint.reviewCycles.length > 0) {
+    reviewCycleLines.push(`## Code Review ↔ Dev Fix Cycles`, ``);
+    sprint.reviewCycles.forEach(({ reviewerKey, devKey, round, issues }) => {
+      reviewCycleLines.push(
+        `### Round ${round}: ${reviewerKey} → ${devKey}`,
+        ``,
+        `Issues returned to dev:`,
+        ...issues.map(i => `- ${i}`),
+        ``
+      );
+    });
+    reviewCycleLines.push(`---`, ``);
+  }
+
   // ── QA summary line ──────────────────────────────────────────────────────────
   const qaStatsSummary = sprint.outputs.qaStats
     ? Object.entries(sprint.outputs.qaStats).map(([key, s]) =>
@@ -373,8 +534,12 @@ function buildMarkdownLog(sprint) {
     `- **Completed:** ${sprint.completedAt || 'In progress'}`,
     `- **Mode:** ${sprint.mode}`,
     `- **Requirement:** ${sprint.requirement}`,
+    ...(sprint.reviewCycles?.length > 0
+      ? [`- **Review Cycles:** ${sprint.reviewCycles.length} (Max allowed: ${MAX_REVIEW_CYCLES})`]
+      : []),
+    ...(reviewStatsSummary ? [`- **Review Results:** ${reviewStatsSummary}`] : []),
     ...(sprint.fixCycles?.length > 0
-      ? [`- **Fix Cycles:** ${sprint.fixCycles.length} (Max allowed: ${MAX_QA_CYCLES})`]
+      ? [`- **QA Fix Cycles:** ${sprint.fixCycles.length} (Max allowed: ${MAX_QA_CYCLES})`]
       : []),
     ...(qaStatsSummary ? [`- **QA Results:** ${qaStatsSummary}`] : []),
     ``,
@@ -399,6 +564,22 @@ function buildMarkdownLog(sprint) {
           `### ${key}`, '', output, '',
         ])
       : [sprint.outputs.dev || '']
+    ),
+    ``,
+    `---`,
+    ``,
+    ...reviewCycleLines,
+    `## Code Review Output`,
+    ``,
+    ...(typeof sprint.outputs.review === 'object' && sprint.outputs.review !== null
+      ? Object.entries(sprint.outputs.review).flatMap(([key, output]) => {
+          const stats = sprint.outputs.reviewStats?.[key];
+          const badge = stats
+            ? ` — ${stats.passed ? '✓ PASSED' : '✗ FAILED'} in ${stats.rounds} round(s)`
+            : '';
+          return [`### ${key}${badge}`, '', output, ''];
+        })
+      : [sprint.outputs.review || '(no review output)']
     ),
     ``,
     `---`,

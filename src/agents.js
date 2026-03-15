@@ -56,6 +56,34 @@ Given a requirement and user stories, produce:
 Output plain text. Be specific about file paths and function names.`,
   },
 
+  reviewer: {
+    name: 'Code Reviewer',
+    abbr: 'CR',
+    color: 'cyan',
+    model: 'claude-sonnet-4-6',
+    maxTokens: 1200,
+    systemPrompt: `You are a Senior Code Reviewer in an Agile engineering team.
+Review the implementation carefully for:
+1. Requirement alignment — does it fully and correctly implement what was specified?
+2. Bugs — logic errors, off-by-one, null/undefined risks, unhandled edge cases, race conditions
+3. Security — injection vulnerabilities, missing auth/authz, data exposure, insecure operations
+4. Performance — N+1 queries, inefficient algorithms, blocking I/O, unnecessary computation
+5. Resource management — memory leaks, unclosed connections, missing cleanup, improper error propagation
+6. Best practices — SOLID principles, proper error handling, clear naming, code duplication
+
+You MUST respond in EXACTLY this format:
+
+VERDICT: PASS
+(or write VERDICT: FAIL if any significant issues must be fixed before testing)
+
+ISSUES:
+- [specific issue with file/function reference and brief fix suggestion]
+(omit the ISSUES section entirely when VERDICT is PASS)
+
+REVIEW NOTES:
+[2-4 sentence summary: what you reviewed, overall quality, and any non-blocking observations]`,
+  },
+
   qa: {
     name: 'QA Engineer',
     abbr: 'QA',
@@ -285,6 +313,33 @@ export function parseQaVerdict(qaOutput) {
     : qaOutput; // fallback: treat entire output as tests
 
   return { passed, issues, tests };
+}
+
+// ─── Reviewer Verdict Parser ───────────────────────────────────────────────────
+
+/**
+ * Parse structured Code Reviewer output into verdict + issues + notes.
+ *
+ * @param {string} reviewOutput - raw text from reviewer agent
+ * @returns {{ passed: boolean, issues: string[], notes: string }}
+ */
+export function parseReviewerVerdict(reviewOutput) {
+  const verdictMatch = reviewOutput.match(/VERDICT:\s*(PASS|FAIL)/i);
+  const passed = verdictMatch ? verdictMatch[1].toUpperCase() === 'PASS' : true;
+
+  const issues = [];
+  const issuesBlock = reviewOutput.match(/ISSUES:\n([\s\S]*?)(?=\nREVIEW NOTES:|$)/i);
+  if (issuesBlock) {
+    issuesBlock[1].split('\n').forEach(line => {
+      const trimmed = line.replace(/^\s*[-*•\d.)]\s*/, '').trim();
+      if (trimmed.length > 3) issues.push(trimmed);
+    });
+  }
+
+  const notesBlock = reviewOutput.match(/REVIEW NOTES:\n([\s\S]*)/i);
+  const notes = notesBlock ? notesBlock[1].trim() : '';
+
+  return { passed, issues, notes };
 }
 
 // ─── DEV Fix Agent ─────────────────────────────────────────────────────────────
