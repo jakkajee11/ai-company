@@ -1,0 +1,21 @@
+{
+  "name": "ai-corp",
+  "version": "1.0.0",
+  "description": "AI Software Company — Claude Code as Developer agent",
+  "type": "module",
+  "bin": {
+    "ai-corp": "./src/cli.js"
+  },
+  "scripts": {
+    "start": "node src/cli.js",
+    "sprint": "node src/cli.js sprint",
+    "mcp": "node src/mcp-server.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "chalk": "^5.3.0",
+    "ora": "^8.0.1",
+    "ws": "^8.19.0"
+  }
+}
