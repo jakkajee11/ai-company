@@ -371,7 +371,7 @@
     /* Kanban Board */
     .kanban {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
+      grid-template-columns: repeat(5, 1fr);
       gap: 0.75rem;
     }
 
@@ -1146,6 +1146,12 @@
               <div id="kanban-review"></div>
             </div>
             <div class="kanban-column">
+              <div class="kanban-header" style="color: var(--error);">
+                Blocked <span class="kanban-count" id="count-blocked">0</span>
+              </div>
+              <div id="kanban-blocked"></div>
+            </div>
+            <div class="kanban-column">
               <div class="kanban-header">
                 Done <span class="kanban-count" id="count-done">0</span>
               </div>
@@ -1748,7 +1754,7 @@
     }
 
     function renderKanban() {
-      const columns = ['backlog', 'inProgress', 'review', 'done'];
+      const columns = ['backlog', 'inProgress', 'review', 'blocked', 'done'];
 
       columns.forEach((col) => {
         const container = document.getElementById(`kanban-${col}`);

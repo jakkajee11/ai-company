@@ -37,7 +37,7 @@ let sprintState = {
   qaAgents: [],
   phaseOrder: ['po', 'tl'],  // dev → reviewer → QA agents insert แบบ dynamic
   phases: makeInitialPhases(),
-  kanban: { backlog: [], inProgress: [], review: [], done: [] },
+  kanban: { backlog: [], inProgress: [], review: [], blocked: [], done: [] },
   logs: [],
   connectedClients: 0,
 };
@@ -129,7 +129,7 @@ export function resetState(requirement, mode) {
     qaAgents: [],
     phaseOrder: ['po', 'tl'],
     phases: makeInitialPhases(),
-    kanban: { backlog: [], inProgress: [], review: [], done: [] },
+    kanban: { backlog: [], inProgress: [], review: [], blocked: [], done: [] },
     logs: [],
     connectedClients: sprintState.connectedClients,
   };
