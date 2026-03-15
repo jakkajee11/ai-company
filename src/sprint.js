@@ -7,7 +7,7 @@
 
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
-import { callAgent, runDevAgent, runDevAgentForTask, runDevFixForTask, parseQaVerdict, parseReviewerVerdict, AGENTS } from './agents.js';
+import { callAgent, runDevAgent, runDevAgentForTask, runDevFixForTask, parseQaVerdict, parseReviewerVerdict, AGENTS, STAR_WARS_PERSONAS } from './agents.js';
 
 // จำนวน dev สูงสุดที่รันพร้อมกันได้ — ตั้งผ่าน MAX_DEVS env var, default = ตามจำนวน tasks
 const MAX_PARALLEL_DEVS = parseInt(process.env.MAX_DEVS) || Infinity;
@@ -43,21 +43,30 @@ export async function runSprint(requirement, opts = {}) {
       backlog: [],
       inProgress: [],
       review: [],
+      blocked: [],  // งานที่ QA ไม่ผ่านหลังครบรอบสูงสุด — รอ human review
       done: [],
     },
     outputs: {},
-    reviewCycles: [], // บันทึกรอบที่ Reviewer ส่งงานกลับ: [{ reviewerKey, devKey, round, issues }]
-    fixCycles: [],   // บันทึกรอบที่ QA ส่งงานกลับ: [{ qaKey, devKey, round, issues }]
+    reviewCycles: [],     // บันทึกรอบที่ Reviewer ส่งงานกลับ: [{ reviewerKey, devKey, round, issues }]
+    fixCycles: [],        // บันทึกรอบที่ QA ส่งงานกลับ: [{ qaKey, devKey, round, issues }]
+    needsHumanReview: [], // งานที่ต้องการ human review: [{ task, qaKey, qaRound, file, issues }]
   };
 
   // Notify progress bar to initialize
   onProgress({ type: 'sprint:start', sprint });
 
+  // ── Agent name map: agentKey → Star Wars character name ──
+  // Populated as agents are created; used by sprintLog for display names.
+  const agentNames = {
+    po: STAR_WARS_PERSONAS.po.character,
+    tl: STAR_WARS_PERSONAS.tl.character,
+  };
+
   // Helper: log + notify
   const sprintLog = (agentKey, message, decision = null) => {
     const entry = {
       timestamp: new Date().toISOString(),
-      agent: AGENTS[agentKey]?.name || agentKey,
+      agent: agentNames[agentKey] || AGENTS[agentKey]?.name || agentKey,
       message,
       decision,
     };
@@ -88,7 +97,8 @@ export async function runSprint(requirement, opts = {}) {
     'Prioritize by user value and dependency order');
 
   const poOutput = await callAgent('po',
-    `Requirement: ${requirement}\nMode: ${mode}`
+    `Requirement: ${requirement}\nMode: ${mode}`,
+    { persona: STAR_WARS_PERSONAS.po.identity }
   );
   sprint.outputs.po = poOutput;
   onProgress({ type: 'output', agent: 'po', content: poOutput });
@@ -104,7 +114,8 @@ export async function runSprint(requirement, opts = {}) {
     'Chose layered architecture — testable, maintainable, maps well to team tasks');
 
   const tlOutput = await callAgent('tl',
-    `Requirement: ${requirement}\n\nUser stories from PO:\n${poOutput}`
+    `Requirement: ${requirement}\n\nUser stories from PO:\n${poOutput}`,
+    { persona: STAR_WARS_PERSONAS.tl.identity }
   );
   sprint.outputs.tl = tlOutput;
   onProgress({ type: 'output', agent: 'tl', content: tlOutput });
@@ -118,11 +129,18 @@ export async function runSprint(requirement, opts = {}) {
 
   // จำนวน dev agents ที่จะ spawn — ไม่เกิน MAX_DEVS และไม่เกินจำนวน tasks จริง
   const numDevs = Math.max(1, Math.min(devTasks.length, MAX_PARALLEL_DEVS));
-  const devAgents = devTasks.slice(0, numDevs).map((task, i) => ({
-    key: `dev-${i}`,
-    name: numDevs > 1 ? `Dev ${i + 1}: ${task.title.slice(0, 25)}` : 'Developer',
-    task,
-  }));
+  const devPersonas = STAR_WARS_PERSONAS.dev;
+  const devAgents = devTasks.slice(0, numDevs).map((task, i) => {
+    const persona = devPersonas[i % devPersonas.length];
+    return {
+      key: `dev-${i}`,
+      name: persona.character,
+      persona,
+      task,
+    };
+  });
+  // Register dev names in the name map
+  devAgents.forEach(a => { agentNames[a.key] = a.name; });
 
   // แจ้งทุก layer ให้รู้ว่า team มีกี่คน ก่อนเริ่ม DEV phase
   onProgress({ type: 'team:setup', devAgents });
@@ -135,7 +153,7 @@ export async function runSprint(requirement, opts = {}) {
   moveCard(devTaskIds.slice(0, numDevs), 'inProgress');
 
   const devResults = await Promise.all(
-    devAgents.map(async ({ key, name, task }) => {
+    devAgents.map(async ({ key, name, persona, task }) => {
       onProgress({
         type: 'phase',
         agent: key,
@@ -152,6 +170,7 @@ export async function runSprint(requirement, opts = {}) {
       const output = await runDevAgentForTask(task, requirement, tlOutput, taskDir, {
         mode,
         agentKey: key,
+        persona: persona?.identity,
         sprintLog: (msg, decision) => sprintLog(key, msg, decision),
       });
 
@@ -165,13 +184,18 @@ export async function runSprint(requirement, opts = {}) {
   moveCard(devTaskIds, 'review');
 
   // ── Phase 4: Code Review — 1 reviewer per dev, parallel ──────────────────────
-  const reviewerAgents = devResults.map((result, i) => ({
-    key: `reviewer-${i}`,
-    name: devResults.length > 1
-      ? `Reviewer ${i + 1}: ${result.task.title.slice(0, 20)}`
-      : 'Code Reviewer',
-    devResult: result,
-  }));
+  const reviewerPersonas = STAR_WARS_PERSONAS.reviewer;
+  const reviewerAgents = devResults.map((result, i) => {
+    const persona = reviewerPersonas[i % reviewerPersonas.length];
+    return {
+      key: `reviewer-${i}`,
+      name: persona.character,
+      persona,
+      devResult: result,
+    };
+  });
+  // Register reviewer names
+  reviewerAgents.forEach(a => { agentNames[a.key] = a.name; });
 
   // แจ้งทุก layer ก่อนเริ่ม Review phase
   onProgress({ type: 'reviewer-team:setup', reviewerAgents });
@@ -182,8 +206,10 @@ export async function runSprint(requirement, opts = {}) {
 
   // ── Reviewer ↔ Dev feedback loop — each reviewer runs in parallel ────────────
   const reviewResults = await Promise.all(
-    reviewerAgents.map(async ({ key: reviewerKey, devResult }) => {
+    reviewerAgents.map(async ({ key: reviewerKey, persona: reviewerPersona, devResult }) => {
       const devKey = devResult.key;
+      // Look up dev persona for fix calls
+      const devPersonaForReview = devAgents.find(a => a.key === devKey)?.persona;
       let currentDevOutput = devResult.output;
       let reviewOutput = '';
       let verdict = { passed: false, issues: [], notes: '' };
@@ -213,7 +239,7 @@ export async function runSprint(requirement, opts = {}) {
           ? `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}\n\nNote: Simulation mode — review the implementation plan.`
           : `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}\n\nImplementation:\n${currentDevOutput}`;
 
-        reviewOutput = await callAgent('reviewer', reviewContext);
+        reviewOutput = await callAgent('reviewer', reviewContext, { persona: reviewerPersona?.identity });
         verdict = parseReviewerVerdict(reviewOutput);
         onProgress({ type: 'output', agent: reviewerKey, content: reviewOutput });
 
@@ -262,6 +288,7 @@ export async function runSprint(requirement, opts = {}) {
           {
             mode,
             agentKey: devKey,
+            persona: devPersonaForReview?.identity,
             sprintLog: (msg, decision) => sprintLog(devKey, msg, decision),
           }
         );
@@ -299,13 +326,18 @@ export async function runSprint(requirement, opts = {}) {
   });
 
   // ── Phase 5: QA — 1 QA per dev, with feedback loop back to Dev ──────────────
-  const qaAgents = reviewedDevResults.map((result, i) => ({
-    key: `qa-${i}`,
-    name: reviewedDevResults.length > 1
-      ? `QA ${i + 1}: ${result.task.title.slice(0, 22)}`
-      : 'QA Engineer',
-    devResult: result,
-  }));
+  const qaPersonas = STAR_WARS_PERSONAS.qa;
+  const qaAgents = reviewedDevResults.map((result, i) => {
+    const persona = qaPersonas[i % qaPersonas.length];
+    return {
+      key: `qa-${i}`,
+      name: persona.character,
+      persona,
+      devResult: result,
+    };
+  });
+  // Register QA names
+  qaAgents.forEach(a => { agentNames[a.key] = a.name; });
 
   // แจ้งทุก layer ก่อนเริ่ม QA phase
   onProgress({ type: 'qa-team:setup', qaAgents });
@@ -323,8 +355,11 @@ export async function runSprint(requirement, opts = {}) {
 
   // ── QA ↔ Dev feedback loop — each QA agent runs in parallel ─────────────────
   const qaResults = await Promise.all(
-    qaAgents.map(async ({ key: qaKey, devResult }) => {
+    qaAgents.map(async ({ key: qaKey, persona: qaPersona, devResult }) => {
       const devKey = devResult.key;
+      // Dev and reviewer personas for fix/re-review calls within this QA loop
+      const devPersonaForQa       = devAgents.find(a => a.key === devKey)?.persona;
+      const reviewerPersonaForQa  = reviewerAgents.find(a => a.devResult.key === devKey)?.persona;
       let currentDevOutput = devResult.output;
       let qaOutput = '';
       let verdict = { passed: false, issues: [], tests: '' };
@@ -356,7 +391,7 @@ export async function runSprint(requirement, opts = {}) {
           ? `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nNote: Simulation mode — write tests based on the architecture plan.`
           : `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}\n\nImplementation:\n${currentDevOutput}`;
 
-        qaOutput = await callAgent('qa', qaContext);
+        qaOutput = await callAgent('qa', qaContext, { persona: qaPersona?.identity });
         verdict = parseQaVerdict(qaOutput);
         onProgress({ type: 'output', agent: qaKey, content: qaOutput });
 
@@ -390,7 +425,7 @@ export async function runSprint(requirement, opts = {}) {
         });
 
         sprintLog(devKey,
-          `Received ${verdict.issues.length} issue(s) from QA (round ${qaRound})`,
+          `Received ${verdict.issues.length} issue(s) from QA (round ${qaRound}) — will fix then pass through reviewer before returning to QA`,
           verdict.issues.map((issue, i) => `${i + 1}. ${issue}`).join(' | ')
         );
 
@@ -411,20 +446,113 @@ export async function runSprint(requirement, opts = {}) {
           {
             mode,
             agentKey: devKey,
+            persona: devPersonaForQa?.identity,
             sprintLog: (msg, decision) => sprintLog(devKey, msg, decision),
           }
         );
 
         onProgress({ type: 'output', agent: devKey, content: currentDevOutput });
         sprintLog(devKey,
-          `Fixes applied (round ${qaRound}) — returning to QA`,
-          `Fixed ${verdict.issues.length} issue(s)`
+          `Fixes applied (round ${qaRound}) — sending to reviewer before returning to QA`,
+          `Fixed ${verdict.issues.length} QA issue(s)`
         );
 
-        // Update dev output in sprint and move card back to review
         sprint.outputs.dev[devKey] = currentDevOutput;
         moveCard([devResult.task.id], 'review');
-      } // end while
+
+        // ── Reviewer must re-review every Dev fix before code returns to QA ──
+        const reviewerKey = `reviewer-${devKey.split('-')[1]}`;
+        let reReviewRound = 0;
+
+        while (reReviewRound <= MAX_REVIEW_CYCLES) {
+          reReviewRound++;
+          const isReviewFinal = reReviewRound > MAX_REVIEW_CYCLES;
+
+          onProgress({
+            type: 'phase',
+            agent: reviewerKey,
+            phase: reReviewRound === 1
+              ? `Re-reviewing after QA fix ${qaRound}: ${devResult.task.title.slice(0, 22)}`
+              : `Re-reviewing (attempt ${reReviewRound}) after QA fix ${qaRound}`,
+          });
+          sprintLog(reviewerKey,
+            reReviewRound === 1
+              ? `Re-reviewing code after QA fix round ${qaRound} — must pass before returning to QA`
+              : `Re-reviewing (attempt ${reReviewRound}) after QA fix round ${qaRound}`,
+            'Checking: requirements, bugs, security, performance, best practices'
+          );
+
+          const reReviewContext = mode === 'simulate'
+            ? `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}\n\nNote: Simulation mode — re-review after QA fix round ${qaRound}.`
+            : `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}\n\nImplementation (after QA fix round ${qaRound}):\n${currentDevOutput}`;
+
+          const reReviewOutput = await callAgent('reviewer', reReviewContext, { persona: reviewerPersonaForQa?.identity });
+          const reVerdict = parseReviewerVerdict(reReviewOutput);
+          onProgress({ type: 'output', agent: reviewerKey, content: reReviewOutput });
+
+          if (reVerdict.passed) {
+            sprintLog(reviewerKey,
+              `✓ Re-review PASSED — code approved, returning to QA (round ${qaRound + 1})`,
+              reReviewRound === 1 ? 'Quality verified after QA fix' : `Approved on attempt ${reReviewRound}`
+            );
+            break;
+          }
+
+          // Re-review FAILED
+          sprintLog(reviewerKey,
+            `✗ Re-review FAILED — ${reVerdict.issues.length} issue(s) found`,
+            reVerdict.issues.slice(0, 3).join(' | ')
+          );
+
+          if (isReviewFinal) {
+            sprintLog(reviewerKey,
+              `⚠ Max review attempts reached after QA fix — forwarding to QA with known issues`,
+              `Unresolved: ${reVerdict.issues.length} issue(s)`
+            );
+            break;
+          }
+
+          // Dev must fix reviewer issues before going back to QA
+          sprint.reviewCycles.push({
+            reviewerKey, devKey, round: reReviewRound,
+            issues: reVerdict.issues, context: `qa-fix-${qaRound}`,
+          });
+
+          sprintLog(devKey,
+            `Received ${reVerdict.issues.length} reviewer issue(s) after QA fix (reviewer attempt ${reReviewRound})`,
+            reVerdict.issues.map((issue, i) => `${i + 1}. ${issue}`).join(' | ')
+          );
+
+          moveCard([devResult.task.id], 'inProgress');
+          onProgress({
+            type: 'phase',
+            agent: devKey,
+            phase: `Fixing reviewer issues after QA fix ${qaRound}: ${devResult.task.title.slice(0, 18)}`,
+          });
+
+          currentDevOutput = await runDevFixForTask(
+            devResult.task,
+            currentDevOutput,
+            reVerdict.issues,
+            devResult.taskDir,
+            {
+              mode,
+              agentKey: devKey,
+              persona: devPersonaForQa?.identity,
+              sprintLog: (msg, decision) => sprintLog(devKey, msg, decision),
+            }
+          );
+
+          onProgress({ type: 'output', agent: devKey, content: currentDevOutput });
+          sprintLog(devKey,
+            `Reviewer fixes applied (after QA fix ${qaRound}) — re-sending to reviewer`,
+            `Fixed ${reVerdict.issues.length} reviewer issue(s)`
+          );
+          sprint.outputs.dev[devKey] = currentDevOutput;
+          moveCard([devResult.task.id], 'review');
+        } // end reviewer re-review loop
+
+      } // end QA while
 
       // ── Write final test file ─────────────────────────────────────────────
       if (mode !== 'simulate' && existsSync(devResult.taskDir)) {

@@ -117,14 +117,120 @@ Use describe/it blocks. Mock external deps with jest.mock(). Cover: happy path, 
   },
 };
 
+// ─── Star Wars Personas ────────────────────────────────────────────────────────
+//  11 characters, same technical skills per role, different identity & voice.
+//  Each entry has: character (display name), title, identity (prepended to systemPrompt)
+
+export const STAR_WARS_PERSONAS = {
+  po: {
+    character: 'Princess Leia Organa',
+    title: 'Senator & Rebel Alliance Leader',
+    identity: `You are Princess Leia Organa — Senator of Alderaan and leader of the Rebel Alliance.
+You represent the users and fight relentlessly for what they truly need.
+You speak with clarity, urgency, and conviction. Your requirements are precise and purposeful.
+You cut through ambiguity and prioritize ruthlessly because the mission matters.`,
+  },
+
+  tl: {
+    character: 'Obi-Wan Kenobi',
+    title: 'Jedi Master & Chief Architect',
+    identity: `You are Obi-Wan Kenobi — Jedi Master and Chief Architect of the engineering team.
+You design systems with elegance, foresight, and measured wisdom.
+You speak calmly and precisely. Trade-offs are considered carefully and documented with gravity.
+Your architecture is clean, purposeful, and built to last.`,
+  },
+
+  dev: [
+    {
+      character: 'Luke Skywalker',
+      title: 'Jedi Developer',
+      identity: `You are Luke Skywalker — idealistic Jedi Developer.
+You believe in clean code and doing things the right way.
+You are determined and will not abandon a hard problem.
+The Force guides you toward elegant, purposeful solutions.`,
+    },
+    {
+      character: 'Han Solo',
+      title: 'Maverick Developer',
+      identity: `You are Han Solo — pragmatic, quick-thinking Maverick Developer.
+"I know" is your catchphrase. You cut through complexity and find the fastest path to working software.
+You handle edge cases the way you dodge TIE fighters: instinctively and effectively.
+You don't overthink — you ship.`,
+    },
+    {
+      character: 'Lando Calrissian',
+      title: 'Administrator Developer',
+      identity: `You are Lando Calrissian — charismatic Administrator Developer.
+You find creative solutions others overlook. Your code is elegant, readable, and has a certain style.
+You work well under pressure and turn complex challenges into smooth implementations.`,
+    },
+  ],
+
+  reviewer: [
+    {
+      character: 'Yoda',
+      title: 'Grand Master Code Reviewer',
+      identity: `You are Yoda — Grand Master Code Reviewer, eight hundred years of engineering wisdom you carry.
+What others miss, you see. When writing review notes, occasionally use inverted sentence structure as Yoda would.
+Thorough and wise your reviews are, yet concise. Let nothing slip past, you will not.`,
+    },
+    {
+      character: 'Mace Windu',
+      title: 'High Council Code Reviewer',
+      identity: `You are Mace Windu — High Council Code Reviewer.
+You have no patience for substandard work. Either the code meets the standard or it does not — there is no middle ground.
+Your reviews are direct, strict, and uncompromising. Every flaw is identified with authority and precision.`,
+    },
+    {
+      character: 'Qui-Gon Jinn',
+      title: 'Senior Code Reviewer',
+      identity: `You are Qui-Gon Jinn — thoughtful Senior Code Reviewer.
+You look beyond the surface to the true intent of the code.
+You are thorough but balanced, carefully distinguishing critical defects from minor observations.
+You guide developers toward better solutions with wisdom and patience.`,
+    },
+  ],
+
+  qa: [
+    {
+      character: 'R2-D2',
+      title: 'Astromech QA Unit',
+      identity: `You are R2-D2 — elite Astromech QA Unit.
+You systematically probe every system pathway, protocol, and interface.
+Your diagnostic circuits find bugs others cannot. You are thorough, relentless, and accurate.
+Translate your beep-boop diagnostics into precise technical findings.`,
+    },
+    {
+      character: 'C-3PO',
+      title: 'Protocol QA Droid',
+      identity: `You are C-3PO — Protocol QA Droid, fluent in over six million forms of software failure.
+You are meticulous, detail-oriented, and enumerate every possible failure mode.
+You may express concern about the odds. Your reports cover every edge case and protocol deviation comprehensively.
+"I must warn you, sir" is an appropriate opener when issues are found.`,
+    },
+    {
+      character: 'Darth Vader',
+      title: 'Dark Lord of QA',
+      identity: `You are Darth Vader — Dark Lord of QA.
+You are relentless, methodical, and show no mercy to broken code.
+"I find your lack of test coverage disturbing." You pursue every flaw with the full power of the Dark Side.
+Your verdict is final. Your standards are absolute. Weakness in code, you will find.`,
+    },
+  ],
+};
+
 // ─── Non-DEV agents: call Anthropic API directly ──────────────────────────────
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
 
-export async function callAgent(agentKey, userMessage) {
+export async function callAgent(agentKey, userMessage, opts = {}) {
   const agent = AGENTS[agentKey];
+  // Prepend Star Wars persona identity before the technical system prompt
+  const systemPrompt = opts.persona
+    ? `${opts.persona}\n\n---\n\n${agent.systemPrompt}`
+    : agent.systemPrompt;
   let lastError;
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -132,7 +238,7 @@ export async function callAgent(agentKey, userMessage) {
       const response = await client.messages.create({
         model: agent.model,
         max_tokens: agent.maxTokens,
-        system: agent.systemPrompt,
+        system: systemPrompt,
         messages: [{ role: 'user', content: userMessage }],
       });
       return response.content[0].text;
@@ -164,26 +270,28 @@ export async function callAgent(agentKey, userMessage) {
  * @param {object} opts         - { mode, sprintLog, agentKey }
  */
 export async function runDevAgentForTask(task, requirement, tlOutput, taskDir, opts = {}) {
-  const { mode = 'execute', sprintLog } = opts;
+  const { mode = 'execute', sprintLog, persona } = opts;
 
   if (!existsSync(taskDir)) mkdirSync(taskDir, { recursive: true });
 
   writeFileSync(
     join(taskDir, 'TASK_CONTEXT.md'),
-    buildTaskContext(task, requirement, tlOutput, mode)
+    buildTaskContext(task, requirement, tlOutput, mode, persona)
   );
 
-  if (mode === 'simulate') return await callSimulateDevTask(task, requirement, tlOutput);
+  if (mode === 'simulate') return await callSimulateDevTask(task, requirement, tlOutput, persona);
 
-  return await runClaudeCodeForTask(task, requirement, tlOutput, taskDir, sprintLog);
+  return await runClaudeCodeForTask(task, requirement, tlOutput, taskDir, sprintLog, persona);
 }
 
-async function callSimulateDevTask(task, requirement, tlOutput) {
+async function callSimulateDevTask(task, requirement, tlOutput, persona) {
+  const baseSystem = `You are a Senior Developer. Describe your implementation plan for ONE specific task.
+Be specific about file names and function signatures. Do NOT write full code.`;
+  const system = persona ? `${persona}\n\n---\n\n${baseSystem}` : baseSystem;
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 800,
-    system: `You are a Senior Developer. Describe your implementation plan for ONE specific task.
-Be specific about file names and function signatures. Do NOT write full code.`,
+    system,
     messages: [{
       role: 'user',
       content: `Requirement: ${requirement}\n\nYour task: ${task.title}\n${task.files ? `Files: ${task.files}` : ''}\n\nArchitecture:\n${tlOutput}\n\nDescribe your plan for this task only.`,
@@ -192,11 +300,11 @@ Be specific about file names and function signatures. Do NOT write full code.`,
   return response.content[0].text;
 }
 
-async function runClaudeCodeForTask(task, requirement, tlOutput, taskDir, sprintLog) {
-  const devPrompt = buildClaudeCodeTaskPrompt(task, requirement, tlOutput);
+async function runClaudeCodeForTask(task, requirement, tlOutput, taskDir, sprintLog, persona) {
+  const devPrompt = buildClaudeCodeTaskPrompt(task, requirement, tlOutput, persona);
   writeFileSync(join(taskDir, '.cc-prompt.txt'), devPrompt);
 
-  if (!isClaudeCodeAvailable()) return fallbackDevTaskOutput(task, requirement, tlOutput, taskDir);
+  if (!isClaudeCodeAvailable()) return fallbackDevTaskOutput(task, requirement, tlOutput, taskDir, persona);
 
   try {
     const result = spawnSync('claude', ['--print', '--dangerously-skip-permissions'], {
@@ -220,18 +328,20 @@ async function runClaudeCodeForTask(task, requirement, tlOutput, taskDir, sprint
   }
 }
 
-async function fallbackDevTaskOutput(task, requirement, tlOutput, taskDir) {
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1500,
-    system: `You are a Senior Developer. Implement ONE specific task.
+async function fallbackDevTaskOutput(task, requirement, tlOutput, taskDir, persona) {
+  const baseSystem = `You are a Senior Developer. Implement ONE specific task.
 Respond in this format for EACH file:
 
 ===FILE: path/to/file.ts===
 [file contents]
 ===END===
 
-Focus only on your assigned task. Write clean, production-ready code.`,
+Focus only on your assigned task. Write clean, production-ready code.`;
+  const system = persona ? `${persona}\n\n---\n\n${baseSystem}` : baseSystem;
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1500,
+    system,
     messages: [{
       role: 'user',
       content: `Requirement: ${requirement}\n\nYour task: ${task.title}\n${task.files ? `Files: ${task.files}` : ''}\n\nArchitecture:\n${tlOutput}\n\nImplement your task only.`,
@@ -242,8 +352,9 @@ Focus only on your assigned task. Write clean, production-ready code.`,
   return output;
 }
 
-function buildClaudeCodeTaskPrompt(task, requirement, tlOutput) {
-  return `You are a Developer agent in an AI Agile team. You are responsible for ONE specific task.
+function buildClaudeCodeTaskPrompt(task, requirement, tlOutput, persona) {
+  const identityBlock = persona ? `${persona}\n\n---\n\n` : '';
+  return `${identityBlock}You are a Developer agent in an AI Agile team. You are responsible for ONE specific task.
 
 ## Your assigned task
 ${task.title}
@@ -265,12 +376,15 @@ ${tlOutput}
 Start implementing now.`;
 }
 
-function buildTaskContext(task, requirement, tlOutput, mode) {
+function buildTaskContext(task, requirement, tlOutput, mode, persona) {
+  const identityBlock = persona
+    ? `## Identity\n${persona}\n\n`
+    : '';
   return `# Task Context
 Generated: ${new Date().toISOString()}
 Mode: ${mode}
 
-## Your Task
+${identityBlock}## Your Task
 ${task.title}
 ${task.files ? `Files: ${task.files}` : ''}
 
@@ -354,15 +468,17 @@ export function parseReviewerVerdict(reviewOutput) {
  * @param {object} opts           - { mode, sprintLog, agentKey }
  */
 export async function runDevFixForTask(task, currentOutput, qaIssues, taskDir, opts = {}) {
-  const { mode = 'execute', sprintLog } = opts;
+  const { mode = 'execute', sprintLog, persona } = opts;
 
   if (mode === 'simulate') {
+    const baseSystem = `You are a Senior Developer fixing code issues raised by review.
+Describe concisely how you would address each issue — be specific about file names and functions.
+Do NOT write full code in simulate mode.`;
+    const system = persona ? `${persona}\n\n---\n\n${baseSystem}` : baseSystem;
     const response = await client.messages.create({
       model: 'claude-sonnet-4-6',
       max_tokens: 900,
-      system: `You are a Senior Developer fixing code issues raised by QA review.
-Describe concisely how you would address each issue — be specific about file names and functions.
-Do NOT write full code in simulate mode.`,
+      system,
       messages: [{
         role: 'user',
         content: buildDevFixUserMessage(task, currentOutput, qaIssues),
@@ -378,10 +494,10 @@ Do NOT write full code in simulate mode.`,
   );
 
   if (!isClaudeCodeAvailable()) {
-    return await fallbackDevFixOutput(task, currentOutput, qaIssues, taskDir);
+    return await fallbackDevFixOutput(task, currentOutput, qaIssues, taskDir, persona);
   }
 
-  const fixPrompt = buildDevFixPrompt(task, currentOutput, qaIssues);
+  const fixPrompt = buildDevFixPrompt(task, currentOutput, qaIssues, persona);
   writeFileSync(join(taskDir, '.cc-fix-prompt.txt'), fixPrompt);
 
   try {
@@ -402,17 +518,18 @@ Do NOT write full code in simulate mode.`,
     return output;
   } catch (err) {
     sprintLog?.(`Claude Code fix failed (${err.message}) — using API fallback`);
-    return await fallbackDevFixOutput(task, currentOutput, qaIssues, taskDir);
+    return await fallbackDevFixOutput(task, currentOutput, qaIssues, taskDir, persona);
   }
 }
 
-function buildDevFixPrompt(task, currentOutput, qaIssues) {
-  return `You are a Developer agent. QA has reviewed your work and found issues that must be fixed.
+function buildDevFixPrompt(task, currentOutput, qaIssues, persona) {
+  const identityBlock = persona ? `${persona}\n\n---\n\n` : '';
+  return `${identityBlock}You are a Developer agent. Review issues found in your work and fix them all.
 
 ## Your Task
 ${task.title}
 
-## QA Issues to Fix
+## Issues to Fix
 ${qaIssues.map((issue, i) => `${i + 1}. ${issue}`).join('\n')}
 
 ## Your Previous Implementation
@@ -454,18 +571,20 @@ Address all issues above. Modify existing files as needed.
 `;
 }
 
-async function fallbackDevFixOutput(task, currentOutput, qaIssues, taskDir) {
-  const response = await client.messages.create({
-    model: 'claude-sonnet-4-6',
-    max_tokens: 1500,
-    system: `You are a Senior Developer fixing QA issues.
+async function fallbackDevFixOutput(task, currentOutput, qaIssues, taskDir, persona) {
+  const baseSystem = `You are a Senior Developer fixing review issues.
 Return corrected files using this format for EACH file changed:
 
 ===FILE: path/to/file.ts===
 [complete corrected file contents]
 ===END===
 
-Include ONLY files that need changes. Write clean, production-ready code.`,
+Include ONLY files that need changes. Write clean, production-ready code.`;
+  const system = persona ? `${persona}\n\n---\n\n${baseSystem}` : baseSystem;
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1500,
+    system,
     messages: [{
       role: 'user',
       content: buildDevFixUserMessage(task, currentOutput, qaIssues),
