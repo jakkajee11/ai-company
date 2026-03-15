@@ -45,8 +45,11 @@ const AGENT_BG_COLORS = { po: C.bgPo, tl: C.bgTl, dev: C.bgDev, qa: C.bgQa };
 
 // ─── Progress Bar System ────────────────────────────────────────────────────────
 
-const PHASES = ['po', 'tl', 'dev', 'qa'];
-const PHASE_LABELS = { po: 'Product Owner', tl: 'Tech Lead', dev: 'Developer', qa: 'QA Engineer' };
+// PHASES เริ่มต้นด้วย po, tl แล้วจะ inject dev agents ตอนได้รับ team:setup
+// qa เป็นตัวสุดท้ายเสมอ
+// qa จะถูก inject แบบ dynamic จาก qa-team:setup เช่นเดียวกับ dev
+let PHASES = ['po', 'tl'];
+let PHASE_LABELS = { po: 'Product Owner', tl: 'Tech Lead' };
 const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 let progressState = {
@@ -219,6 +222,10 @@ async function main() {
   const outputDir = resolve(`output/${projectSlug}`);
   const projectDir = join(outputDir, 'project');
 
+  // Store for use in handleProgress
+  _outputDir = outputDir;
+  _projectDir = projectDir;
+
   print('sys', `Mode: ${C.bold}${mode}${C.reset}`);
   print('sys', `Output: ${C.gray}${outputDir}${C.reset}`);
 
@@ -268,6 +275,9 @@ async function main() {
 let currentAgent = null;
 let outputBuffer = {};
 let progressBarLines = 0;
+let _outputDir = 'output';
+let _projectDir = 'output/project';
+let _progressBarHeight = 8; // จำนวน lines ของ progress bar (อัปเดตเมื่อทีม expand)
 
 function handleProgress(event) {
   switch (event.type) {
@@ -276,6 +286,42 @@ function handleProgress(event) {
       // Print initial progress bar with empty lines for placeholder
       console.log('\n\n\n\n\n\n\n\n');
       startProgressBar();
+      break;
+    }
+
+    case 'team:setup': {
+      // Insert dev agents into PHASES (dev agents come before QA)
+      event.devAgents.forEach(({ key, name }) => {
+        if (!PHASES.includes(key)) {
+          PHASES.push(key);
+          PHASE_LABELS[key] = name;
+          AGENT_COLORS[key] = C.dev;
+          AGENT_BG_COLORS[key] = C.bgDev;
+        }
+      });
+      const label = event.devAgents.length > 1
+        ? `Team expanded: ${event.devAgents.length} devs running in parallel`
+        : 'Developer assigned';
+      console.log(`\n  ${C.dev}⚡ ${label}${C.reset}`);
+      renderProgressBar();
+      break;
+    }
+
+    case 'qa-team:setup': {
+      // Append QA agents at the end of PHASES
+      event.qaAgents.forEach(({ key, name }) => {
+        if (!PHASES.includes(key)) {
+          PHASES.push(key);
+          PHASE_LABELS[key] = name;
+          AGENT_COLORS[key] = C.qa;
+          AGENT_BG_COLORS[key] = C.bgQa;
+        }
+      });
+      const label = event.qaAgents.length > 1
+        ? `QA team: ${event.qaAgents.length} engineers running in parallel`
+        : 'QA Engineer assigned';
+      console.log(`\n  ${C.qa}🧪 ${label}${C.reset}`);
+      renderProgressBar();
       break;
     }
 
@@ -351,13 +397,13 @@ function handleProgress(event) {
       console.log(`  ${C.success}${filledBar}${C.dim}${emptyBar}${C.reset} ${percent}% (${done}/${total})`);
       console.log();
       console.log(`  Mode:    ${sprint.mode}`);
-      console.log(`  Output:  ${C.sys}${sprint.mode === 'execute' ? 'output/project/' : 'output/'}${C.reset}`);
-      console.log(`  Log:     ${C.sys}output/sprint-log.md${C.reset}`);
+      console.log(`  Output:  ${C.sys}${_outputDir}${C.reset}`);
+      console.log(`  Log:     ${C.sys}${_outputDir}/sprint-log.md${C.reset}`);
 
       if (sprint.mode === 'execute') {
         console.log();
         console.log(`${C.gray}Next steps:${C.reset}`);
-        console.log(`  cd output/project`);
+        console.log(`  cd ${_projectDir}`);
         console.log(`  npm install`);
         console.log(`  npm test`);
       }

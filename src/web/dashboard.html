@@ -529,8 +529,8 @@
             No sprint running. Start a sprint from the CLI to see progress here.
           </div>
 
-          <!-- Agent Progress -->
-          <div class="agent-progress">
+          <!-- Agent Progress — po + tl static, dev agents injected dynamically, qa static -->
+          <div class="agent-progress" id="agentProgress">
             <div class="agent-phase pending po" id="phase-po">
               <div class="agent-icon">📋</div>
               <div class="agent-name">Product Owner</div>
@@ -541,20 +541,14 @@
               <div class="agent-name">Tech Lead</div>
               <div class="agent-status">Pending</div>
             </div>
-            <div class="agent-phase pending dev" id="phase-dev">
-              <div class="agent-icon">💻</div>
-              <div class="agent-name">Developer</div>
-              <div class="agent-status">Pending</div>
-            </div>
-            <div class="agent-phase pending qa" id="phase-qa">
-              <div class="agent-icon">🧪</div>
-              <div class="agent-name">QA Engineer</div>
-              <div class="agent-status">Pending</div>
-            </div>
+            <!-- dev agents injected here by JS on team:setup -->
+            <div id="devAgentsProgress" style="display:contents"></div>
+            <!-- QA agents injected here by JS on qa-team:setup -->
+            <div id="qaAgentsProgress" style="display:contents"></div>
           </div>
 
-          <!-- Phase Details -->
-          <div class="phase-details">
+          <!-- Phase Details — po + tl static, dev + QA dynamic -->
+          <div class="phase-details" id="phaseDetails">
             <div class="phase-card po" id="card-po">
               <div class="phase-card-header">
                 <div class="phase-card-title">📋 Product Owner</div>
@@ -569,20 +563,10 @@
               </div>
               <div class="phase-output" id="output-tl">Waiting...</div>
             </div>
-            <div class="phase-card dev" id="card-dev">
-              <div class="phase-card-header">
-                <div class="phase-card-title">💻 Developer</div>
-                <div class="phase-duration" id="duration-dev">-</div>
-              </div>
-              <div class="phase-output" id="output-dev">Waiting...</div>
-            </div>
-            <div class="phase-card qa" id="card-qa">
-              <div class="phase-card-header">
-                <div class="phase-card-title">🧪 QA Engineer</div>
-                <div class="phase-duration" id="duration-qa">-</div>
-              </div>
-              <div class="phase-output" id="output-qa">Waiting...</div>
-            </div>
+            <!-- dev cards injected here -->
+            <div id="devCardsContainer" style="display:contents"></div>
+            <!-- QA cards injected here -->
+            <div id="qaCardsContainer" style="display:contents"></div>
           </div>
         </div>
       </div>
@@ -705,6 +689,22 @@
           renderFullState();
           break;
 
+        case 'team:setup':
+          state.devAgents = data.devAgents;
+          state.phases = data.state.phases;
+          state.phaseOrder = data.state.phaseOrder;
+          renderDevAgents(data.devAgents);
+          renderPhaseProgress();
+          break;
+
+        case 'qa-team:setup':
+          state.qaAgents = data.qaAgents;
+          state.phases = data.state.phases;
+          state.phaseOrder = data.state.phaseOrder;
+          renderQaAgents(data.qaAgents);
+          renderPhaseProgress();
+          break;
+
         case 'phase:start':
           state.currentPhase = data.agent;
           state.phases = data.state.phases;
@@ -767,25 +767,76 @@
     }
 
     function renderFullState() {
-      // Requirement
       document.getElementById('requirementText').textContent =
         state.requirement || 'No sprint running';
-
-      // Status
       updateStatus(state.status);
 
-      // Phases
+      // ถ้า state มี devAgents/qaAgents อยู่แล้ว (เช่น reconnect กลางคัน) ให้ render ก่อน
+      if (state.devAgents && state.devAgents.length > 0) renderDevAgents(state.devAgents);
+      if (state.qaAgents  && state.qaAgents.length  > 0) renderQaAgents(state.qaAgents);
       renderPhaseProgress();
-
-      // Kanban
       renderKanban();
-
-      // Logs
       renderActivityLog();
     }
 
+    // สร้าง HTML elements สำหรับ dev agents แบบ dynamic
+    function renderDevAgents(devAgents) {
+      const progressSlot = document.getElementById('devAgentsProgress');
+      const cardsSlot = document.getElementById('devCardsContainer');
+
+      progressSlot.innerHTML = devAgents.map(agent => `
+        <div class="agent-phase pending dev" id="phase-${agent.key}">
+          <div class="agent-icon">💻</div>
+          <div class="agent-name">${escapeHtml(agent.name)}</div>
+          <div class="agent-status">Pending</div>
+        </div>
+      `).join('');
+
+      cardsSlot.innerHTML = devAgents.map(agent => `
+        <div class="phase-card dev" id="card-${agent.key}">
+          <div class="phase-card-header">
+            <div class="phase-card-title">💻 ${escapeHtml(agent.name)}</div>
+            <div class="phase-duration" id="duration-${agent.key}">-</div>
+          </div>
+          <div class="phase-output" id="output-${agent.key}">Waiting...</div>
+        </div>
+      `).join('');
+    }
+
+    // สร้าง HTML elements สำหรับ QA agents แบบ dynamic
+    function renderQaAgents(qaAgents) {
+      const progressSlot = document.getElementById('qaAgentsProgress');
+      const cardsSlot    = document.getElementById('qaCardsContainer');
+
+      progressSlot.innerHTML = qaAgents.map(agent => `
+        <div class="agent-phase pending qa" id="phase-${agent.key}">
+          <div class="agent-icon">🧪</div>
+          <div class="agent-name">${escapeHtml(agent.name)}</div>
+          <div class="agent-status">Pending</div>
+        </div>
+      `).join('');
+
+      cardsSlot.innerHTML = qaAgents.map(agent => `
+        <div class="phase-card qa" id="card-${agent.key}">
+          <div class="phase-card-header">
+            <div class="phase-card-title">🧪 ${escapeHtml(agent.name)}</div>
+            <div class="phase-duration" id="duration-${agent.key}">-</div>
+          </div>
+          <div class="phase-output" id="output-${agent.key}">Waiting...</div>
+        </div>
+      `).join('');
+    }
+
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+      );
+    }
+
     function renderPhaseProgress() {
-      const phases = ['po', 'tl', 'dev', 'qa'];
+      // ใช้ phaseOrder จาก state ถ้ามี ไม่งั้น fallback เป็น po, tl, dev agents, qa
+      const devKeys = (state.devAgents || []).map(a => a.key);
+      const phases = state.phaseOrder || ['po', 'tl', ...devKeys, 'qa'];
 
       phases.forEach((phase) => {
         const phaseEl = document.getElementById(`phase-${phase}`);
@@ -793,14 +844,19 @@
         const outputEl = document.getElementById(`output-${phase}`);
         const durationEl = document.getElementById(`duration-${phase}`);
 
+        // element อาจยังไม่ถูกสร้าง (ถ้า team:setup ยังไม่มา)
+        if (!phaseEl || !cardEl) return;
+
         const phaseData = state.phases[phase] || {};
         const status = phaseData.status || 'pending';
         const isCurrent = state.currentPhase === phase;
 
-        // Update phase element
-        phaseEl.className = `agent-phase ${phase} ${status}`;
+        // dev-N ใช้ class 'dev', qa-N ใช้ class 'qa' เพื่อให้ได้สีเดียวกัน
+        const colorClass = phase.startsWith('dev-') ? 'dev'
+                         : phase.startsWith('qa-')  ? 'qa'
+                         : phase;
+        phaseEl.className = `agent-phase ${colorClass} ${status}`;
 
-        // Update status text
         const statusEl = phaseEl.querySelector('.agent-status');
         if (status === 'running') {
           statusEl.innerHTML = '<span class="spinner">⏳</span> Working...';
@@ -810,14 +866,14 @@
           statusEl.textContent = 'Pending';
         }
 
-        // Update card
-        cardEl.classList.toggle('active', isCurrent);
+        const colorCardClass = phase.startsWith('dev-') ? 'dev'
+                             : phase.startsWith('qa-')  ? 'qa'
+                             : phase;
+        cardEl.className = `phase-card ${colorCardClass}${isCurrent ? ' active' : ''}`;
 
-        // Update output
         const output = phaseData.output || '';
         outputEl.textContent = output.slice(0, 150) + (output.length > 150 ? '...' : '');
 
-        // Update duration
         if (phaseData.duration) {
           durationEl.textContent = `${Math.round(phaseData.duration / 1000)}s`;
         } else if (status === 'running') {

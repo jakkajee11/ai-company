@@ -24,7 +24,7 @@ export const AGENTS = {
     name: 'Product Owner',
     abbr: 'PO',
     color: 'magenta',
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     maxTokens: 900,
     systemPrompt: `You are a Product Owner in an Agile software team.
 Analyze requirements and produce:
@@ -39,7 +39,7 @@ Be concise and actionable. Output plain text, no markdown headers.`,
     name: 'Tech Lead',
     abbr: 'TL',
     color: 'green',
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     maxTokens: 1000,
     systemPrompt: `You are a Tech Lead / Dev Lead in an Agile team.
 Given a requirement and user stories, produce:
@@ -60,7 +60,7 @@ Output plain text. Be specific about file paths and function names.`,
     name: 'QA Engineer',
     abbr: 'QA',
     color: 'yellow',
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     maxTokens: 900,
     systemPrompt: `You are a QA Engineer. Given a feature and its implementation,
 write a Jest test file covering:
@@ -77,22 +77,171 @@ File should be self-contained and runnable.`,
 
 // ─── Non-DEV agents: call Anthropic API directly ──────────────────────────────
 
+const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
+const MAX_RETRIES = 3;
+const BASE_DELAY_MS = 1000;
+
 export async function callAgent(agentKey, userMessage) {
   const agent = AGENTS[agentKey];
-  const response = await client.messages.create({
-    model: agent.model,
-    max_tokens: agent.maxTokens,
-    system: agent.systemPrompt,
-    messages: [{ role: 'user', content: userMessage }],
-  });
-  return response.content[0].text;
+  let lastError;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const response = await client.messages.create({
+        model: agent.model,
+        max_tokens: agent.maxTokens,
+        system: agent.systemPrompt,
+        messages: [{ role: 'user', content: userMessage }],
+      });
+      return response.content[0].text;
+    } catch (err) {
+      lastError = err;
+      const status = err.status ?? err.statusCode;
+      const isRetryable = RETRYABLE_STATUS.has(status) || err.message?.includes('timeout');
+
+      if (!isRetryable || attempt === MAX_RETRIES) break;
+
+      const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+      console.error(`[${agent.abbr}] API error (${status ?? err.message}) — retry ${attempt}/${MAX_RETRIES - 1} in ${delay}ms`);
+      await new Promise(r => setTimeout(r, delay));
+    }
+  }
+
+  throw new Error(`[${agent.abbr}] Failed after ${MAX_RETRIES} attempts: ${lastError?.message}`);
 }
 
 // ─── DEV agent: run Claude Code as subprocess ─────────────────────────────────
 
 /**
- * Claude Code เป็น Developer agent จริงๆ
- * สร้าง project directory, เขียน files, และรัน claude code --print
+ * runDevAgentForTask — Developer agent สำหรับ 1 task (ใช้ใน parallel mode)
+ *
+ * @param {object} task         - { title, files } task จาก TL
+ * @param {string} requirement  - original user requirement
+ * @param {string} tlOutput     - tech lead's full architecture plan
+ * @param {string} taskDir      - directory สำหรับ task นี้โดยเฉพาะ
+ * @param {object} opts         - { mode, sprintLog, agentKey }
+ */
+export async function runDevAgentForTask(task, requirement, tlOutput, taskDir, opts = {}) {
+  const { mode = 'execute', sprintLog } = opts;
+
+  if (!existsSync(taskDir)) mkdirSync(taskDir, { recursive: true });
+
+  writeFileSync(
+    join(taskDir, 'TASK_CONTEXT.md'),
+    buildTaskContext(task, requirement, tlOutput, mode)
+  );
+
+  if (mode === 'simulate') return await callSimulateDevTask(task, requirement, tlOutput);
+
+  return await runClaudeCodeForTask(task, requirement, tlOutput, taskDir, sprintLog);
+}
+
+async function callSimulateDevTask(task, requirement, tlOutput) {
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 800,
+    system: `You are a Senior Developer. Describe your implementation plan for ONE specific task.
+Be specific about file names and function signatures. Do NOT write full code.`,
+    messages: [{
+      role: 'user',
+      content: `Requirement: ${requirement}\n\nYour task: ${task.title}\n${task.files ? `Files: ${task.files}` : ''}\n\nArchitecture:\n${tlOutput}\n\nDescribe your plan for this task only.`,
+    }],
+  });
+  return response.content[0].text;
+}
+
+async function runClaudeCodeForTask(task, requirement, tlOutput, taskDir, sprintLog) {
+  const devPrompt = buildClaudeCodeTaskPrompt(task, requirement, tlOutput);
+  writeFileSync(join(taskDir, '.cc-prompt.txt'), devPrompt);
+
+  if (!isClaudeCodeAvailable()) return fallbackDevTaskOutput(task, requirement, tlOutput, taskDir);
+
+  try {
+    const result = spawnSync('claude', ['--print', '--dangerously-skip-permissions'], {
+      input: devPrompt,
+      encoding: 'utf8',
+      cwd: taskDir,
+      timeout: 120_000,
+      env: { ...process.env, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY },
+    });
+
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(result.stderr || `Exit code ${result.status}`);
+
+    const output = result.stdout?.trim() || '(no output)';
+    const files = listCreatedFiles(taskDir);
+    if (files.length > 0) sprintLog?.(`Created ${files.length} files: ${files.join(', ')}`);
+    return output;
+  } catch (err) {
+    sprintLog?.(`Claude Code unavailable (${err.message}) — using API fallback`);
+    return fallbackDevTaskOutput(task, requirement, tlOutput, taskDir);
+  }
+}
+
+async function fallbackDevTaskOutput(task, requirement, tlOutput, taskDir) {
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1500,
+    system: `You are a Senior Developer. Implement ONE specific task.
+Respond in this format for EACH file:
+
+===FILE: path/to/file.ts===
+[file contents]
+===END===
+
+Focus only on your assigned task. Write clean, production-ready code.`,
+    messages: [{
+      role: 'user',
+      content: `Requirement: ${requirement}\n\nYour task: ${task.title}\n${task.files ? `Files: ${task.files}` : ''}\n\nArchitecture:\n${tlOutput}\n\nImplement your task only.`,
+    }],
+  });
+  const output = response.content[0].text;
+  writeGeneratedFiles(output, taskDir);
+  return output;
+}
+
+function buildClaudeCodeTaskPrompt(task, requirement, tlOutput) {
+  return `You are a Developer agent in an AI Agile team. You are responsible for ONE specific task.
+
+## Your assigned task
+${task.title}
+${task.files ? `\nFiles to create:\n${task.files}` : ''}
+
+## Overall requirement (context only)
+${requirement}
+
+## Architecture from Tech Lead
+${tlOutput}
+
+## Instructions
+1. Implement ONLY your assigned task above
+2. Create the files listed (or determine appropriate files if not specified)
+3. Write clean, production-ready code with error handling
+4. Add a brief comment at the top of each file explaining its purpose
+5. Do NOT implement tasks assigned to other developers
+
+Start implementing now.`;
+}
+
+function buildTaskContext(task, requirement, tlOutput, mode) {
+  return `# Task Context
+Generated: ${new Date().toISOString()}
+Mode: ${mode}
+
+## Your Task
+${task.title}
+${task.files ? `Files: ${task.files}` : ''}
+
+## Requirement
+${requirement}
+
+## Architecture
+${tlOutput}
+`;
+}
+
+/**
+ * runDevAgent — legacy single-dev entry point (ยังคงไว้เพื่อ backward compat)
  *
  * @param {string} requirement   - original user requirement
  * @param {string} tlOutput      - tech lead's architecture plan
@@ -124,7 +273,7 @@ export async function runDevAgent(requirement, tlOutput, projectDir, opts = {}) 
 
 async function callSimulateDev(requirement, tlOutput) {
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     max_tokens: 1000,
     system: `You are a Senior Developer. Given an architecture plan, describe your implementation approach:
 - Which files you would create and why
@@ -198,7 +347,7 @@ async function runClaudeCode(projectDir, requirement, tlOutput, sprintLog) {
 
 async function fallbackDevOutput(requirement, tlOutput, projectDir) {
   const response = await client.messages.create({
-    model: 'claude-sonnet-4-20250514',
+    model: 'claude-sonnet-4-6',
     max_tokens: 1500,
     system: `You are a Senior Developer. Write production-ready implementation code.
 Respond in this exact format for EACH file:

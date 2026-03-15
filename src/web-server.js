@@ -16,25 +16,27 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // ─── State Management ────────────────────────────────────────────────────────
 
+// สร้าง phases เริ่มต้น — dev agents จะถูกเพิ่มแบบ dynamic เมื่อได้รับ team:setup
+function makeInitialPhases() {
+  return {
+    po: { status: 'pending', output: '', startTime: null, duration: 0, name: 'Product Owner' },
+    tl: { status: 'pending', output: '', startTime: null, duration: 0, name: 'Tech Lead' },
+    // dev agents และ QA agents จะถูกเพิ่มแบบ dynamic ผ่าน team:setup และ qa-team:setup
+  };
+}
+
 let sprintState = {
-  status: 'idle', // idle, running, complete, error
+  status: 'idle',
   requirement: '',
   mode: 'execute',
   startedAt: null,
   completedAt: null,
   currentPhase: null,
-  phases: {
-    po: { status: 'pending', output: '', startTime: null, duration: 0 },
-    tl: { status: 'pending', output: '', startTime: null, duration: 0 },
-    dev: { status: 'pending', output: '', startTime: null, duration: 0 },
-    qa: { status: 'pending', output: '', startTime: null, duration: 0 },
-  },
-  kanban: {
-    backlog: [],
-    inProgress: [],
-    review: [],
-    done: [],
-  },
+  devAgents: [],
+  qaAgents: [],
+  phaseOrder: ['po', 'tl'],  // dev + QA agents insert หลัง tl แบบ dynamic
+  phases: makeInitialPhases(),
+  kanban: { backlog: [], inProgress: [], review: [], done: [] },
   logs: [],
   connectedClients: 0,
 };
@@ -121,18 +123,11 @@ export function resetState(requirement, mode) {
     startedAt: null,
     completedAt: null,
     currentPhase: null,
-    phases: {
-      po: { status: 'pending', output: '', startTime: null, duration: 0 },
-      tl: { status: 'pending', output: '', startTime: null, duration: 0 },
-      dev: { status: 'pending', output: '', startTime: null, duration: 0 },
-      qa: { status: 'pending', output: '', startTime: null, duration: 0 },
-    },
-    kanban: {
-      backlog: [],
-      inProgress: [],
-      review: [],
-      done: [],
-    },
+    devAgents: [],
+    qaAgents: [],
+    phaseOrder: ['po', 'tl'],
+    phases: makeInitialPhases(),
+    kanban: { backlog: [], inProgress: [], review: [], done: [] },
     logs: [],
     connectedClients: sprintState.connectedClients,
   };
@@ -150,7 +145,33 @@ export function createWebProgressHandler() {
         broadcast({ type: 'state:start', state: sprintState });
         break;
 
-      case 'phase':
+      case 'team:setup': {
+        // dev agents เพิ่มหลัง tl ใน phaseOrder
+        sprintState.devAgents = event.devAgents;
+        event.devAgents.forEach(({ key, name }) => {
+          if (!sprintState.phases[key]) {
+            sprintState.phases[key] = { status: 'pending', output: '', startTime: null, duration: 0, name };
+            sprintState.phaseOrder.push(key);
+          }
+        });
+        broadcast({ type: 'team:setup', devAgents: event.devAgents, state: sprintState });
+        break;
+      }
+
+      case 'qa-team:setup': {
+        // QA agents เพิ่มต่อท้าย phaseOrder (หลัง dev agents)
+        sprintState.qaAgents = event.qaAgents;
+        event.qaAgents.forEach(({ key, name }) => {
+          if (!sprintState.phases[key]) {
+            sprintState.phases[key] = { status: 'pending', output: '', startTime: null, duration: 0, name };
+            sprintState.phaseOrder.push(key);
+          }
+        });
+        broadcast({ type: 'qa-team:setup', qaAgents: event.qaAgents, state: sprintState });
+        break;
+      }
+
+      case 'phase': {
         const prevPhase = sprintState.currentPhase;
         if (prevPhase && sprintState.phases[prevPhase]) {
           sprintState.phases[prevPhase].duration =
@@ -158,10 +179,13 @@ export function createWebProgressHandler() {
         }
 
         sprintState.currentPhase = event.agent;
-        if (sprintState.phases[event.agent]) {
-          sprintState.phases[event.agent].status = 'running';
-          sprintState.phases[event.agent].startTime = Date.now();
+
+        // auto-create phase entry ถ้าเป็น agent ที่ไม่รู้จัก (ป้องกัน silent skip)
+        if (!sprintState.phases[event.agent]) {
+          sprintState.phases[event.agent] = { status: 'pending', output: '', startTime: null, duration: 0, name: event.agent };
         }
+        sprintState.phases[event.agent].status = 'running';
+        sprintState.phases[event.agent].startTime = Date.now();
 
         broadcast({
           type: 'phase:start',
@@ -170,14 +194,16 @@ export function createWebProgressHandler() {
           state: sprintState,
         });
         break;
+      }
 
       case 'output':
-        if (sprintState.phases[event.agent]) {
-          sprintState.phases[event.agent].status = 'complete';
-          sprintState.phases[event.agent].output = event.content;
-          sprintState.phases[event.agent].duration =
-            Date.now() - (sprintState.phases[event.agent].startTime || Date.now());
+        if (!sprintState.phases[event.agent]) {
+          sprintState.phases[event.agent] = { status: 'pending', output: '', startTime: Date.now(), duration: 0, name: event.agent };
         }
+        sprintState.phases[event.agent].status = 'complete';
+        sprintState.phases[event.agent].output = event.content;
+        sprintState.phases[event.agent].duration =
+          Date.now() - (sprintState.phases[event.agent].startTime || Date.now());
 
         broadcast({
           type: 'phase:output',
@@ -206,7 +232,7 @@ export function createWebProgressHandler() {
         });
         break;
 
-      case 'kanban':
+      case 'kanban': {
         // Update kanban state
         const { id, column, title, agent } = event;
 
@@ -235,6 +261,7 @@ export function createWebProgressHandler() {
           kanban: sprintState.kanban,
         });
         break;
+      }
 
       case 'done':
         sprintState.status = 'complete';

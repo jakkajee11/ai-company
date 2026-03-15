@@ -7,7 +7,10 @@
 
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
-import { callAgent, runDevAgent, AGENTS } from './agents.js';
+import { callAgent, runDevAgent, runDevAgentForTask, AGENTS } from './agents.js';
+
+// จำนวน dev สูงสุดที่รันพร้อมกันได้ — ตั้งผ่าน MAX_DEVS env var, default = ตามจำนวน tasks
+const MAX_PARALLEL_DEVS = parseInt(process.env.MAX_DEVS) || Infinity;
 
 // ─── Sprint runner ─────────────────────────────────────────────────────────────
 
@@ -76,29 +79,21 @@ export async function runSprint(requirement, opts = {}) {
   sprintLog('po', 'Analyzing requirement and creating user stories',
     'Prioritize by user value and dependency order');
 
-  addCards([
-    { id: 'us-0', title: 'Core feature story', agent: 'po' },
-    { id: 'us-1', title: 'Auth / access story', agent: 'po' },
-    { id: 'us-2', title: 'Error handling story', agent: 'po' },
-  ], 'backlog');
-
   const poOutput = await callAgent('po',
     `Requirement: ${requirement}\nMode: ${mode}`
   );
   sprint.outputs.po = poOutput;
   onProgress({ type: 'output', agent: 'po', content: poOutput });
-  sprintLog('po', 'User stories created and backlog populated');
+
+  // Parse user stories dynamically from PO output
+  const userStories = parseUserStories(poOutput);
+  addCards(userStories, 'backlog');
+  sprintLog('po', `User stories created: ${userStories.length} stories added to backlog`);
 
   // ── Phase 2: Tech Lead ──────────────────────────────────────────────────────
   onProgress({ type: 'phase', agent: 'tl', phase: 'Architecture & Task Breakdown' });
   sprintLog('tl', 'Designing architecture and breaking down dev tasks',
     'Chose layered architecture — testable, maintainable, maps well to team tasks');
-
-  addCards([
-    { id: 'dev-0', title: 'Core service', agent: 'tl' },
-    { id: 'dev-1', title: 'Data layer', agent: 'tl' },
-    { id: 'dev-2', title: 'API / interface layer', agent: 'tl' },
-  ], 'backlog');
 
   const tlOutput = await callAgent('tl',
     `Requirement: ${requirement}\n\nUser stories from PO:\n${poOutput}`
@@ -108,52 +103,120 @@ export async function runSprint(requirement, opts = {}) {
   sprintLog('tl', 'Architecture defined. ADR logged.',
     'See ADR section in output for decision rationale');
 
-  // ── Phase 3: Developer (Claude Code) ────────────────────────────────────────
-  onProgress({ type: 'phase', agent: 'dev', phase: mode === 'execute' ? 'Implementation (Claude Code)' : 'Implementation Plan' });
-  moveCard(['dev-0', 'dev-1'], 'inProgress');
-  sprintLog('dev',
-    mode === 'execute'
-      ? 'Claude Code subprocess starting — writing files to project directory'
-      : 'Planning implementation approach',
-    mode === 'execute'
-      ? 'Running: claude --print --dangerously-skip-permissions in project dir'
-      : 'Simulation mode: no files written'
+  // ── กำหนดทีม Developer จาก TL output ─────────────────────────────────────
+  const devTasks = parseDevTasks(tlOutput);
+  addCards(devTasks, 'backlog');
+  const devTaskIds = devTasks.map(t => t.id);
+
+  // จำนวน dev agents ที่จะ spawn — ไม่เกิน MAX_DEVS และไม่เกินจำนวน tasks จริง
+  const numDevs = Math.max(1, Math.min(devTasks.length, MAX_PARALLEL_DEVS));
+  const devAgents = devTasks.slice(0, numDevs).map((task, i) => ({
+    key: `dev-${i}`,
+    name: numDevs > 1 ? `Dev ${i + 1}: ${task.title.slice(0, 25)}` : 'Developer',
+    task,
+  }));
+
+  // แจ้งทุก layer ให้รู้ว่า team มีกี่คน ก่อนเริ่ม DEV phase
+  onProgress({ type: 'team:setup', devAgents });
+  sprintLog('tl',
+    `Team assembled: ${numDevs} developer${numDevs > 1 ? 's' : ''} running in parallel`,
+    devAgents.map(a => a.name).join(', ')
   );
 
-  const devOutput = await runDevAgent(requirement, tlOutput, projectDir, {
-    mode,
-    sprintLog,
-  });
-  sprint.outputs.dev = devOutput;
-  onProgress({ type: 'output', agent: 'dev', content: devOutput });
-  moveCard(['dev-0', 'dev-1', 'dev-2'], 'review');
-  sprintLog('dev', mode === 'execute' ? 'Implementation complete. Files written to project dir.' : 'Plan documented.');
+  // ── Phase 3: Developer(s) — parallel ─────────────────────────────────────
+  moveCard(devTaskIds.slice(0, numDevs), 'inProgress');
 
-  // ── Phase 4: QA ─────────────────────────────────────────────────────────────
-  onProgress({ type: 'phase', agent: 'qa', phase: 'Test Generation' });
-  addCards([
-    { id: 'qa-0', title: 'Unit + integration tests', agent: 'qa' },
-    { id: 'qa-1', title: 'Security edge cases', agent: 'qa' },
-  ], 'inProgress');
-  sprintLog('qa', 'Generating test suite', 'Coverage: happy path, edge cases, error handling, security');
+  const devResults = await Promise.all(
+    devAgents.map(async ({ key, name, task }) => {
+      onProgress({
+        type: 'phase',
+        agent: key,
+        phase: mode === 'execute' ? `Implementing: ${task.title.slice(0, 30)}` : 'Planning implementation',
+      });
+      sprintLog(key,
+        mode === 'execute' ? `Starting: ${task.title}` : `Planning: ${task.title}`,
+        mode === 'execute' ? 'Running Claude Code subprocess' : 'Simulation mode'
+      );
 
-  const qaOutput = await callAgent('qa',
-    `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nImplementation:\n${devOutput}`
+      // แต่ละ dev ได้ directory ของตัวเอง (ถ้ามีหลาย dev)
+      const taskDir = numDevs > 1 ? join(projectDir, key) : projectDir;
+
+      const output = await runDevAgentForTask(task, requirement, tlOutput, taskDir, {
+        mode,
+        agentKey: key,
+        sprintLog: (msg, decision) => sprintLog(key, msg, decision),
+      });
+
+      onProgress({ type: 'output', agent: key, content: output });
+      sprintLog(key, mode === 'execute' ? 'Implementation complete' : 'Plan documented');
+      return { key, task, output, taskDir };
+    })
   );
-  sprint.outputs.qa = qaOutput;
-  onProgress({ type: 'output', agent: 'qa', content: qaOutput });
 
-  // Write test file to project
-  if (mode === 'execute' && existsSync(projectDir)) {
-    const testDir = join(projectDir, '__tests__');
-    if (!existsSync(testDir)) mkdirSync(testDir, { recursive: true });
-    writeFileSync(join(testDir, 'sprint.test.js'), qaOutput);
-  }
+  sprint.outputs.dev = devResults.reduce((acc, { key, output }) => ({ ...acc, [key]: output }), {});
+  moveCard(devTaskIds, 'review');
 
-  moveCard(['dev-0', 'dev-1', 'dev-2', 'us-0', 'us-1', 'us-2'], 'done');
-  moveCard(['qa-0'], 'done');
-  moveCard(['qa-1'], 'review');
-  sprintLog('qa', 'Test suite created. Written to __tests__/sprint.test.js');
+  // ── Phase 4: QA — 1 QA per dev, parallel ────────────────────────────────────
+  const qaAgents = devResults.map((result, i) => ({
+    key: `qa-${i}`,
+    name: devResults.length > 1
+      ? `QA ${i + 1}: ${result.task.title.slice(0, 22)}`
+      : 'QA Engineer',
+    devResult: result,
+  }));
+
+  // แจ้งทุก layer ก่อนเริ่ม QA phase
+  onProgress({ type: 'qa-team:setup', qaAgents });
+  sprintLog('qa',
+    `QA team assembled: ${qaAgents.length} engineer${qaAgents.length > 1 ? 's' : ''} running in parallel`,
+    qaAgents.map(a => a.name).join(', ')
+  );
+
+  // Kanban cards สำหรับ QA — 1 test card + 1 security card ต่อ dev
+  const qaCards = qaAgents.flatMap(({ key, devResult }) => [
+    { id: `${key}-test`, title: `Tests: ${devResult.task.title.slice(0, 28)}`, agent: 'qa' },
+    { id: `${key}-sec`,  title: `Security: ${devResult.task.title.slice(0, 24)}`, agent: 'qa' },
+  ]);
+  addCards(qaCards, 'inProgress');
+
+  const qaResults = await Promise.all(
+    qaAgents.map(async ({ key, devResult }) => {
+      onProgress({
+        type: 'phase',
+        agent: key,
+        phase: `Testing: ${devResult.task.title.slice(0, 30)}`,
+      });
+      sprintLog(key, `Testing: ${devResult.task.title}`,
+        'Coverage: happy path, edge cases, error handling, security');
+
+      const qaContext = mode === 'simulate'
+        ? `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nNote: Simulation mode — write tests based on the architecture plan.`
+        : `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}\n\nImplementation:\n${devResult.output}`;
+
+      const qaOutput = await callAgent('qa', qaContext);
+      onProgress({ type: 'output', agent: key, content: qaOutput });
+
+      // เขียน test file ลง directory ของ dev นั้นๆ
+      if (mode !== 'simulate' && existsSync(devResult.taskDir)) {
+        const testDir = join(devResult.taskDir, '__tests__');
+        if (!existsSync(testDir)) mkdirSync(testDir, { recursive: true });
+        writeFileSync(join(testDir, 'sprint.test.js'), qaOutput);
+        sprintLog(key, `Tests written to ${devResult.key}/__tests__/sprint.test.js`);
+      } else if (mode === 'simulate') {
+        sprintLog(key, 'Test plan generated (simulation — no files written)');
+      }
+
+      return { key, devResult, qaOutput };
+    })
+  );
+
+  sprint.outputs.qa = qaResults.reduce(
+    (acc, { key, qaOutput }) => ({ ...acc, [key]: qaOutput }), {}
+  );
+
+  const allTaskIds = [...userStories.map(s => s.id), ...devTaskIds];
+  moveCard(allTaskIds, 'done');
+  moveCard(qaCards.map(c => c.id), 'done');
 
   // ── Finalize ────────────────────────────────────────────────────────────────
   sprint.completedAt = new Date().toISOString();
@@ -215,9 +278,12 @@ function buildMarkdownLog(sprint) {
     ``,
     `## QA Output`,
     ``,
-    '```javascript',
-    sprint.outputs.qa || '',
-    '```',
+    ...(typeof sprint.outputs.qa === 'object' && sprint.outputs.qa !== null
+      ? Object.entries(sprint.outputs.qa).flatMap(([key, output]) => [
+          `### ${key}`, '', '```javascript', output, '```', '',
+        ])
+      : ['```javascript', sprint.outputs.qa || '', '```']
+    ),
     ``,
     `---`,
     ``,
@@ -238,6 +304,62 @@ function buildMarkdownLog(sprint) {
     buildKanbanTable(sprint.kanban),
   ];
   return lines.join('\n');
+}
+
+// ─── Dynamic card parsers ──────────────────────────────────────────────────────
+
+/**
+ * Parse user stories from PO output.
+ * Looks for "As a..." lines; falls back to generic cards if none found.
+ */
+function parseUserStories(poOutput) {
+  const lines = poOutput.split('\n');
+  const stories = [];
+  for (const line of lines) {
+    const match = line.match(/as a\s+(.+?),?\s+i want\s+(.+?)(?:\s+so that|$)/i);
+    if (match) {
+      const title = `As a ${match[1].trim()}: ${match[2].trim()}`.slice(0, 60);
+      stories.push({ id: `us-${stories.length}`, title, agent: 'po' });
+    }
+    if (stories.length >= 5) break;
+  }
+  // Fallback if PO didn't follow the format
+  if (stories.length === 0) {
+    return [
+      { id: 'us-0', title: 'Core feature story', agent: 'po' },
+      { id: 'us-1', title: 'Auth / access story', agent: 'po' },
+      { id: 'us-2', title: 'Error handling story', agent: 'po' },
+    ];
+  }
+  return stories;
+}
+
+/**
+ * Parse dev tasks from TL output.
+ * Looks for numbered task names; falls back to generic cards.
+ */
+function parseDevTasks(tlOutput) {
+  const lines = tlOutput.split('\n');
+  const tasks = [];
+  for (const line of lines) {
+    // Match lines like "Task 1: ...", "1. Create authService", "- Task name: ..."
+    const match = line.match(/(?:task\s*\d*[:.]?\s*|^\s*\d+[.)]\s+|^\s*[-*]\s+task\s+name:\s*)(.{5,60})/i);
+    if (match) {
+      const title = match[1].trim().replace(/^name:\s*/i, '').slice(0, 60);
+      if (title.length > 4) {
+        tasks.push({ id: `dev-${tasks.length}`, title, agent: 'tl' });
+      }
+    }
+    if (tasks.length >= 5) break;
+  }
+  if (tasks.length === 0) {
+    return [
+      { id: 'dev-0', title: 'Core service', agent: 'tl' },
+      { id: 'dev-1', title: 'Data layer', agent: 'tl' },
+      { id: 'dev-2', title: 'API / interface layer', agent: 'tl' },
+    ];
+  }
+  return tasks;
 }
 
 function buildKanbanTable(kanban) {
