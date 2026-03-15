@@ -7,10 +7,13 @@
 
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
-import { callAgent, runDevAgent, runDevAgentForTask, AGENTS } from './agents.js';
+import { callAgent, runDevAgent, runDevAgentForTask, runDevFixForTask, parseQaVerdict, AGENTS } from './agents.js';
 
 // จำนวน dev สูงสุดที่รันพร้อมกันได้ — ตั้งผ่าน MAX_DEVS env var, default = ตามจำนวน tasks
 const MAX_PARALLEL_DEVS = parseInt(process.env.MAX_DEVS) || Infinity;
+
+// จำนวนรอบสูงสุดที่ QA ส่งงานกลับให้ Dev แก้ได้ — ตั้งผ่าน MAX_QA_CYCLES env var
+const MAX_QA_CYCLES = parseInt(process.env.MAX_QA_CYCLES) || 2;
 
 // ─── Sprint runner ─────────────────────────────────────────────────────────────
 
@@ -40,6 +43,7 @@ export async function runSprint(requirement, opts = {}) {
       done: [],
     },
     outputs: {},
+    fixCycles: [], // บันทึกรอบที่ QA ส่งงานกลับ: [{ devKey, qaKey, round, issues }]
   };
 
   // Notify progress bar to initialize
@@ -156,7 +160,7 @@ export async function runSprint(requirement, opts = {}) {
   sprint.outputs.dev = devResults.reduce((acc, { key, output }) => ({ ...acc, [key]: output }), {});
   moveCard(devTaskIds, 'review');
 
-  // ── Phase 4: QA — 1 QA per dev, parallel ────────────────────────────────────
+  // ── Phase 4: QA — 1 QA per dev, with feedback loop back to Dev ──────────────
   const qaAgents = devResults.map((result, i) => ({
     key: `qa-${i}`,
     name: devResults.length > 1
@@ -179,39 +183,130 @@ export async function runSprint(requirement, opts = {}) {
   ]);
   addCards(qaCards, 'inProgress');
 
+  // ── QA ↔ Dev feedback loop — each QA agent runs in parallel ─────────────────
   const qaResults = await Promise.all(
-    qaAgents.map(async ({ key, devResult }) => {
-      onProgress({
-        type: 'phase',
-        agent: key,
-        phase: `Testing: ${devResult.task.title.slice(0, 30)}`,
-      });
-      sprintLog(key, `Testing: ${devResult.task.title}`,
-        'Coverage: happy path, edge cases, error handling, security');
+    qaAgents.map(async ({ key: qaKey, devResult }) => {
+      const devKey = devResult.key;
+      let currentDevOutput = devResult.output;
+      let qaOutput = '';
+      let verdict = { passed: false, issues: [], tests: '' };
+      let qaRound = 0;
 
-      const qaContext = mode === 'simulate'
-        ? `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nNote: Simulation mode — write tests based on the architecture plan.`
-        : `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}\n\nImplementation:\n${devResult.output}`;
+      // Loop: QA review → (if FAIL) Dev fix → repeat up to MAX_QA_CYCLES fix rounds
+      // Total QA reviews = MAX_QA_CYCLES + 1  (e.g. 2 fix cycles = 3 QA reviews)
+      while (qaRound <= MAX_QA_CYCLES) {
+        qaRound++;
+        const isFirstRound = qaRound === 1;
+        const isFinalRound = qaRound > MAX_QA_CYCLES;
 
-      const qaOutput = await callAgent('qa', qaContext);
-      onProgress({ type: 'output', agent: key, content: qaOutput });
+        // ── QA review ──
+        onProgress({
+          type: 'phase',
+          agent: qaKey,
+          phase: isFirstRound
+            ? `Testing: ${devResult.task.title.slice(0, 30)}`
+            : `Re-testing (round ${qaRound}): ${devResult.task.title.slice(0, 22)}`,
+        });
+        sprintLog(qaKey,
+          isFirstRound
+            ? `Testing: ${devResult.task.title}`
+            : `Re-testing after fixes (round ${qaRound}): ${devResult.task.title}`,
+          'Checking: correctness, error handling, security, code quality'
+        );
 
-      // เขียน test file ลง directory ของ dev นั้นๆ
+        const qaContext = mode === 'simulate'
+          ? `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nNote: Simulation mode — write tests based on the architecture plan.`
+          : `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}\n\nImplementation:\n${currentDevOutput}`;
+
+        qaOutput = await callAgent('qa', qaContext);
+        verdict = parseQaVerdict(qaOutput);
+        onProgress({ type: 'output', agent: qaKey, content: qaOutput });
+
+        if (verdict.passed) {
+          sprintLog(qaKey,
+            `✓ PASSED (round ${qaRound})`,
+            isFirstRound ? 'No issues found' : `Passed after ${qaRound - 1} fix round(s)`
+          );
+          break; // QA satisfied — exit loop
+        }
+
+        // QA FAILED
+        sprintLog(qaKey,
+          `✗ FAILED — ${verdict.issues.length} issue(s) found (round ${qaRound})`,
+          verdict.issues.slice(0, 3).join(' | ')
+        );
+
+        if (isFinalRound) {
+          // Max fix cycles reached — accept and move on with warning
+          sprintLog(qaKey,
+            `⚠ Max QA cycles (${MAX_QA_CYCLES}) reached — proceeding with known issues`,
+            `Unresolved: ${verdict.issues.length} issue(s)`
+          );
+          break;
+        }
+
+        // ── Send back to Dev for fixes ────────────────────────────────────────
+        sprint.fixCycles.push({
+          qaKey, devKey, round: qaRound,
+          issues: verdict.issues,
+        });
+
+        sprintLog(devKey,
+          `Received ${verdict.issues.length} issue(s) from QA (round ${qaRound})`,
+          verdict.issues.map((issue, i) => `${i + 1}. ${issue}`).join(' | ')
+        );
+
+        // Move dev task card back to inProgress visually
+        moveCard([devResult.task.id], 'inProgress');
+
+        onProgress({
+          type: 'phase',
+          agent: devKey,
+          phase: `Fixing QA issues (round ${qaRound}): ${devResult.task.title.slice(0, 22)}`,
+        });
+
+        currentDevOutput = await runDevFixForTask(
+          devResult.task,
+          currentDevOutput,
+          verdict.issues,
+          devResult.taskDir,
+          {
+            mode,
+            agentKey: devKey,
+            sprintLog: (msg, decision) => sprintLog(devKey, msg, decision),
+          }
+        );
+
+        onProgress({ type: 'output', agent: devKey, content: currentDevOutput });
+        sprintLog(devKey,
+          `Fixes applied (round ${qaRound}) — returning to QA`,
+          `Fixed ${verdict.issues.length} issue(s)`
+        );
+
+        // Update dev output in sprint and move card back to review
+        sprint.outputs.dev[devKey] = currentDevOutput;
+        moveCard([devResult.task.id], 'review');
+      } // end while
+
+      // ── Write final test file ─────────────────────────────────────────────
       if (mode !== 'simulate' && existsSync(devResult.taskDir)) {
         const testDir = join(devResult.taskDir, '__tests__');
         if (!existsSync(testDir)) mkdirSync(testDir, { recursive: true });
-        writeFileSync(join(testDir, 'sprint.test.js'), qaOutput);
-        sprintLog(key, `Tests written to ${devResult.key}/__tests__/sprint.test.js`);
+        writeFileSync(join(testDir, 'sprint.test.js'), verdict.tests || qaOutput);
+        sprintLog(qaKey, `Tests written to ${devKey}/__tests__/sprint.test.js`);
       } else if (mode === 'simulate') {
-        sprintLog(key, 'Test plan generated (simulation — no files written)');
+        sprintLog(qaKey, 'Test plan generated (simulation — no files written)');
       }
 
-      return { key, devResult, qaOutput };
+      return { key: qaKey, devResult, qaOutput, qaRound, passed: verdict.passed };
     })
   );
 
   sprint.outputs.qa = qaResults.reduce(
     (acc, { key, qaOutput }) => ({ ...acc, [key]: qaOutput }), {}
+  );
+  sprint.outputs.qaStats = qaResults.reduce(
+    (acc, { key, qaRound, passed }) => ({ ...acc, [key]: { rounds: qaRound, passed } }), {}
   );
 
   const allTaskIds = [...userStories.map(s => s.id), ...devTaskIds];
@@ -248,6 +343,29 @@ function saveSprint(sprint, outputDir) {
 }
 
 function buildMarkdownLog(sprint) {
+  // ── QA summary line ──────────────────────────────────────────────────────────
+  const qaStatsSummary = sprint.outputs.qaStats
+    ? Object.entries(sprint.outputs.qaStats).map(([key, s]) =>
+        `${key}: ${s.passed ? '✓ PASSED' : '✗ FAILED'} in ${s.rounds} round(s)`
+      ).join(', ')
+    : null;
+
+  // ── Fix cycles section ───────────────────────────────────────────────────────
+  const fixCycleLines = [];
+  if (sprint.fixCycles && sprint.fixCycles.length > 0) {
+    fixCycleLines.push(`## QA ↔ Dev Fix Cycles`, ``);
+    sprint.fixCycles.forEach(({ qaKey, devKey, round, issues }) => {
+      fixCycleLines.push(
+        `### Round ${round}: ${qaKey} → ${devKey}`,
+        ``,
+        `Issues returned to dev:`,
+        ...issues.map(i => `- ${i}`),
+        ``
+      );
+    });
+    fixCycleLines.push(`---`, ``);
+  }
+
   const lines = [
     `# Sprint Log`,
     ``,
@@ -255,6 +373,10 @@ function buildMarkdownLog(sprint) {
     `- **Completed:** ${sprint.completedAt || 'In progress'}`,
     `- **Mode:** ${sprint.mode}`,
     `- **Requirement:** ${sprint.requirement}`,
+    ...(sprint.fixCycles?.length > 0
+      ? [`- **Fix Cycles:** ${sprint.fixCycles.length} (Max allowed: ${MAX_QA_CYCLES})`]
+      : []),
+    ...(qaStatsSummary ? [`- **QA Results:** ${qaStatsSummary}`] : []),
     ``,
     `---`,
     ``,
@@ -272,16 +394,26 @@ function buildMarkdownLog(sprint) {
     ``,
     `## Developer Output`,
     ``,
-    sprint.outputs.dev || '',
+    ...(typeof sprint.outputs.dev === 'object' && sprint.outputs.dev !== null
+      ? Object.entries(sprint.outputs.dev).flatMap(([key, output]) => [
+          `### ${key}`, '', output, '',
+        ])
+      : [sprint.outputs.dev || '']
+    ),
     ``,
     `---`,
     ``,
+    ...fixCycleLines,
     `## QA Output`,
     ``,
     ...(typeof sprint.outputs.qa === 'object' && sprint.outputs.qa !== null
-      ? Object.entries(sprint.outputs.qa).flatMap(([key, output]) => [
-          `### ${key}`, '', '```javascript', output, '```', '',
-        ])
+      ? Object.entries(sprint.outputs.qa).flatMap(([key, output]) => {
+          const stats = sprint.outputs.qaStats?.[key];
+          const badge = stats
+            ? ` — ${stats.passed ? '✓ PASSED' : '✗ FAILED'} in ${stats.rounds} round(s)`
+            : '';
+          return [`### ${key}${badge}`, '', '```javascript', output, '```', ''];
+        })
       : ['```javascript', sprint.outputs.qa || '', '```']
     ),
     ``,

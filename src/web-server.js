@@ -173,24 +173,40 @@ export function createWebProgressHandler() {
 
       case 'phase': {
         const prevPhase = sprintState.currentPhase;
-        if (prevPhase && sprintState.phases[prevPhase]) {
+        if (prevPhase && sprintState.phases[prevPhase] && prevPhase !== event.agent) {
+          // Accumulate duration for the phase that was running before (don't overwrite if re-activated)
+          const elapsed = Date.now() - (sprintState.phases[prevPhase].startTime || Date.now());
           sprintState.phases[prevPhase].duration =
-            Date.now() - (sprintState.phases[prevPhase].startTime || Date.now());
+            (sprintState.phases[prevPhase].duration || 0) + elapsed;
         }
 
         sprintState.currentPhase = event.agent;
 
         // auto-create phase entry ถ้าเป็น agent ที่ไม่รู้จัก (ป้องกัน silent skip)
         if (!sprintState.phases[event.agent]) {
-          sprintState.phases[event.agent] = { status: 'pending', output: '', startTime: null, duration: 0, name: event.agent };
+          sprintState.phases[event.agent] = {
+            status: 'pending', output: '', startTime: null, duration: 0,
+            name: event.agent, fixRound: 0,
+          };
         }
+
+        // ถ้า phase นี้เคย complete แล้วถูก re-activate (Dev ถูกส่งกลับมาแก้)
+        const wasComplete = sprintState.phases[event.agent].status === 'complete';
+        if (wasComplete) {
+          sprintState.phases[event.agent].fixRound =
+            (sprintState.phases[event.agent].fixRound || 0) + 1;
+        }
+
         sprintState.phases[event.agent].status = 'running';
         sprintState.phases[event.agent].startTime = Date.now();
+        sprintState.phases[event.agent].currentPhaseLabel = event.phase;
 
         broadcast({
           type: 'phase:start',
           agent: event.agent,
           phase: event.phase,
+          reactivated: wasComplete,
+          fixRound: sprintState.phases[event.agent].fixRound,
           state: sprintState,
         });
         break;

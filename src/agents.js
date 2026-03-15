@@ -61,17 +61,31 @@ Output plain text. Be specific about file paths and function names.`,
     abbr: 'QA',
     color: 'yellow',
     model: 'claude-sonnet-4-6',
-    maxTokens: 900,
-    systemPrompt: `You are a QA Engineer. Given a feature and its implementation,
-write a Jest test file covering:
-1. Happy path (main success scenario)
-2. Edge cases (empty input, boundary values)
-3. Error cases (invalid data, missing auth)
-4. At least one security test (injection, auth bypass)
+    maxTokens: 1400,
+    systemPrompt: `You are a QA Engineer. Review the implementation and produce a structured report.
 
-Output ONLY the test code — a complete Jest test file, no explanation before or after.
-Use describe/it blocks. Mock external dependencies with jest.mock().
-File should be self-contained and runnable.`,
+Review the code for:
+1. Correctness — does it match the stated requirements?
+2. Error handling — null/undefined checks, edge cases, input validation
+3. Security — injection, auth bypass, data exposure, unsafe operations
+4. Code quality — obvious bugs, missing logic, incomplete implementation
+
+You MUST respond in EXACTLY this format (all three sections required):
+
+VERDICT: PASS
+(or write VERDICT: FAIL if any issues were found)
+
+ISSUES:
+- describe each specific issue with file/function reference if possible
+(omit the ISSUES section entirely when VERDICT is PASS)
+
+TESTS:
+\`\`\`javascript
+// complete Jest test file here
+\`\`\`
+
+The TESTS section must always be present and contain a complete, runnable Jest file.
+Use describe/it blocks. Mock external deps with jest.mock(). Cover: happy path, edge cases, errors, security.`,
   },
 };
 
@@ -238,6 +252,173 @@ ${requirement}
 ## Architecture
 ${tlOutput}
 `;
+}
+
+// ─── QA Verdict Parser ─────────────────────────────────────────────────────────
+
+/**
+ * Parse structured QA output into verdict + issues + test code.
+ *
+ * @param {string} qaOutput - raw text from QA agent
+ * @returns {{ passed: boolean, issues: string[], tests: string }}
+ */
+export function parseQaVerdict(qaOutput) {
+  // Extract VERDICT line
+  const verdictMatch = qaOutput.match(/VERDICT:\s*(PASS|FAIL)/i);
+  // Default to PASS if QA agent didn't follow the format (fail-safe)
+  const passed = verdictMatch ? verdictMatch[1].toUpperCase() === 'PASS' : true;
+
+  // Extract ISSUES section (between ISSUES: and TESTS:)
+  const issues = [];
+  const issuesBlock = qaOutput.match(/ISSUES:\n([\s\S]*?)(?=\nTESTS:|$)/i);
+  if (issuesBlock) {
+    issuesBlock[1].split('\n').forEach(line => {
+      const trimmed = line.replace(/^\s*[-*•\d.)]\s*/, '').trim();
+      if (trimmed.length > 3) issues.push(trimmed);
+    });
+  }
+
+  // Extract TESTS section — strip fenced code block markers if present
+  const testsBlock = qaOutput.match(/TESTS:\n(?:```(?:javascript|js|typescript|ts)?\n)?([\s\S]*?)(?:```\s*)?$/i);
+  const tests = testsBlock
+    ? testsBlock[1].replace(/```\s*$/, '').trim()
+    : qaOutput; // fallback: treat entire output as tests
+
+  return { passed, issues, tests };
+}
+
+// ─── DEV Fix Agent ─────────────────────────────────────────────────────────────
+
+/**
+ * runDevFixForTask — re-run the developer agent to fix specific QA issues.
+ *
+ * @param {object} task           - { title, files } the original task
+ * @param {string} currentOutput  - dev's previous implementation output
+ * @param {string[]} qaIssues     - list of issues found by QA
+ * @param {string} taskDir        - task's working directory
+ * @param {object} opts           - { mode, sprintLog, agentKey }
+ */
+export async function runDevFixForTask(task, currentOutput, qaIssues, taskDir, opts = {}) {
+  const { mode = 'execute', sprintLog } = opts;
+
+  if (mode === 'simulate') {
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 900,
+      system: `You are a Senior Developer fixing code issues raised by QA review.
+Describe concisely how you would address each issue — be specific about file names and functions.
+Do NOT write full code in simulate mode.`,
+      messages: [{
+        role: 'user',
+        content: buildDevFixUserMessage(task, currentOutput, qaIssues),
+      }],
+    });
+    return response.content[0].text;
+  }
+
+  // Write updated context with QA feedback
+  writeFileSync(
+    join(taskDir, 'QA_FEEDBACK.md'),
+    buildQaFeedbackContext(task, qaIssues)
+  );
+
+  if (!isClaudeCodeAvailable()) {
+    return await fallbackDevFixOutput(task, currentOutput, qaIssues, taskDir);
+  }
+
+  const fixPrompt = buildDevFixPrompt(task, currentOutput, qaIssues);
+  writeFileSync(join(taskDir, '.cc-fix-prompt.txt'), fixPrompt);
+
+  try {
+    const result = spawnSync('claude', ['--print', '--dangerously-skip-permissions'], {
+      input: fixPrompt,
+      encoding: 'utf8',
+      cwd: taskDir,
+      timeout: 120_000,
+      env: { ...process.env, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY },
+    });
+
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error(result.stderr || `Exit code ${result.status}`);
+
+    const output = result.stdout?.trim() || '(no output)';
+    const files = listCreatedFiles(taskDir);
+    if (files.length > 0) sprintLog?.(`Fixed ${files.length} file(s): ${files.join(', ')}`);
+    return output;
+  } catch (err) {
+    sprintLog?.(`Claude Code fix failed (${err.message}) — using API fallback`);
+    return await fallbackDevFixOutput(task, currentOutput, qaIssues, taskDir);
+  }
+}
+
+function buildDevFixPrompt(task, currentOutput, qaIssues) {
+  return `You are a Developer agent. QA has reviewed your work and found issues that must be fixed.
+
+## Your Task
+${task.title}
+
+## QA Issues to Fix
+${qaIssues.map((issue, i) => `${i + 1}. ${issue}`).join('\n')}
+
+## Your Previous Implementation
+${currentOutput}
+
+## Instructions
+1. Fix EACH issue listed above — address them all
+2. Modify the relevant files directly
+3. Do NOT change code that is already correct and working
+4. After making changes, briefly summarize what you fixed
+
+Fix the issues now.`;
+}
+
+function buildDevFixUserMessage(task, currentOutput, qaIssues) {
+  return `Task: ${task.title}
+
+QA found these issues in your implementation:
+${qaIssues.map((issue, i) => `${i + 1}. ${issue}`).join('\n')}
+
+Your current implementation:
+${currentOutput.slice(0, 800)}${currentOutput.length > 800 ? '\n...(truncated)' : ''}
+
+Describe how you would fix each issue.`;
+}
+
+function buildQaFeedbackContext(task, qaIssues) {
+  return `# QA Feedback
+Generated: ${new Date().toISOString()}
+
+## Task
+${task.title}
+
+## Issues to Fix
+${qaIssues.map((issue, i) => `${i + 1}. ${issue}`).join('\n')}
+
+## Instructions
+Address all issues above. Modify existing files as needed.
+`;
+}
+
+async function fallbackDevFixOutput(task, currentOutput, qaIssues, taskDir) {
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-6',
+    max_tokens: 1500,
+    system: `You are a Senior Developer fixing QA issues.
+Return corrected files using this format for EACH file changed:
+
+===FILE: path/to/file.ts===
+[complete corrected file contents]
+===END===
+
+Include ONLY files that need changes. Write clean, production-ready code.`,
+    messages: [{
+      role: 'user',
+      content: buildDevFixUserMessage(task, currentOutput, qaIssues),
+    }],
+  });
+  const output = response.content[0].text;
+  writeGeneratedFiles(output, taskDir);
+  return output;
 }
 
 /**

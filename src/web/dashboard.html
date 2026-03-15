@@ -190,6 +190,12 @@
       transition: all 0.3s ease;
       position: relative;
       overflow: hidden;
+      cursor: pointer;
+    }
+
+    .agent-phase:hover {
+      filter: brightness(1.15);
+      transform: translateY(-2px);
     }
 
     .agent-phase::before {
@@ -283,6 +289,14 @@
       padding: 1rem;
       border: 1px solid var(--border);
       transition: all 0.3s ease;
+      cursor: pointer;
+    }
+
+    .phase-card:hover {
+      border-color: rgba(255,255,255,0.15);
+      background: #151525;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 16px rgba(0,0,0,0.3);
     }
 
     .phase-card.active {
@@ -444,6 +458,7 @@
       border-radius: 50px;
       font-size: 0.75rem;
       border: 1px solid var(--border);
+      z-index: 50;
     }
 
     .connection-dot {
@@ -474,6 +489,487 @@
       font-size: 0.875rem;
     }
 
+    /* Fix Round Badge */
+    .fix-badge {
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      background: rgba(251, 191, 36, 0.25);
+      color: var(--qa-color);
+      font-size: 0.6rem;
+      font-weight: 700;
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      letter-spacing: 0.02em;
+      pointer-events: none;
+    }
+
+    /* QA verdict indicator on phase-card */
+    .verdict-pass {
+      color: var(--success);
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+
+    .verdict-fail {
+      color: var(--error);
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+
+    /* ─── Agent Detail Panel ──────────────────────────────────────────── */
+
+    .detail-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      z-index: 200;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+      backdrop-filter: blur(2px);
+    }
+
+    .detail-overlay.open {
+      opacity: 1;
+      pointer-events: all;
+    }
+
+    .detail-panel {
+      position: fixed;
+      top: 0;
+      right: 0;
+      height: 100vh;
+      width: 500px;
+      background: #13132a;
+      border-left: 1px solid var(--border);
+      z-index: 201;
+      transform: translateX(100%);
+      transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .detail-panel.open {
+      transform: translateX(0);
+    }
+
+    /* Detail Header */
+    .detail-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 1.25rem 1.5rem;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+    }
+
+    .detail-agent-info {
+      display: flex;
+      align-items: center;
+      gap: 0.875rem;
+    }
+
+    .detail-icon-wrap {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.5rem;
+      flex-shrink: 0;
+    }
+
+    .detail-icon-wrap.po { background: var(--po-bg); }
+    .detail-icon-wrap.tl { background: var(--tl-bg); }
+    .detail-icon-wrap.dev { background: var(--dev-bg); }
+    .detail-icon-wrap.qa { background: var(--qa-bg); }
+
+    .detail-agent-name {
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+
+    .detail-agent-role {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-top: 0.125rem;
+    }
+
+    .detail-close {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 1rem;
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+      flex-shrink: 0;
+    }
+
+    .detail-close:hover {
+      background: var(--bg-card-hover);
+      color: var(--text-primary);
+      border-color: rgba(255,255,255,0.2);
+    }
+
+    /* Detail Scrollable Body */
+    .detail-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.25rem 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .detail-body::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    .detail-body::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    .detail-body::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 2px;
+    }
+
+    /* Detail Section */
+    .detail-section-label {
+      font-size: 0.65rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--text-muted);
+      margin-bottom: 0.625rem;
+    }
+
+    /* Status Row */
+    .detail-status-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .detail-status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      padding: 0.375rem 0.875rem;
+      border-radius: 50px;
+      font-size: 0.8rem;
+      font-weight: 600;
+    }
+
+    .detail-status-pill.pending {
+      background: rgba(85, 85, 119, 0.2);
+      color: var(--text-muted);
+    }
+
+    .detail-status-pill.running {
+      background: var(--dev-bg);
+      color: var(--dev-color);
+    }
+
+    .detail-status-pill.complete {
+      background: rgba(34, 197, 94, 0.15);
+      color: var(--success);
+    }
+
+    .detail-status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .detail-status-pill.running .detail-status-dot {
+      animation: pulse 1.5s infinite;
+    }
+
+    .detail-elapsed {
+      font-size: 0.875rem;
+      color: var(--text-secondary);
+      font-family: monospace;
+    }
+
+    /* Task Box */
+    .detail-task-box {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+    }
+
+    .detail-task-title {
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 0.375rem;
+    }
+
+    .detail-task-desc {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .detail-task-pairing {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 0.625rem;
+      padding-top: 0.625rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+
+    /* Current Action */
+    .detail-current-action {
+      background: rgba(96, 165, 250, 0.06);
+      border: 1px solid rgba(96, 165, 250, 0.2);
+      border-radius: 10px;
+      padding: 0.875rem 1rem;
+      font-size: 0.825rem;
+      color: var(--dev-color);
+      line-height: 1.5;
+      display: flex;
+      gap: 0.625rem;
+      align-items: flex-start;
+    }
+
+    .detail-current-action.po {
+      background: rgba(192, 132, 252, 0.06);
+      border-color: rgba(192, 132, 252, 0.2);
+      color: var(--po-color);
+    }
+
+    .detail-current-action.tl {
+      background: rgba(74, 222, 128, 0.06);
+      border-color: rgba(74, 222, 128, 0.2);
+      color: var(--tl-color);
+    }
+
+    .detail-current-action.qa {
+      background: rgba(251, 191, 36, 0.06);
+      border-color: rgba(251, 191, 36, 0.2);
+      color: var(--qa-color);
+    }
+
+    .detail-current-icon {
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    /* Output Block */
+    .detail-output-pre {
+      background: rgba(0,0,0,0.3);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+      font-size: 0.75rem;
+      font-family: 'SF Mono', 'Fira Code', monospace;
+      color: var(--text-secondary);
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-height: 260px;
+      overflow-y: auto;
+      line-height: 1.6;
+    }
+
+    .detail-output-pre::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    .detail-output-pre::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 2px;
+    }
+
+    .detail-output-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.625rem;
+    }
+
+    .detail-copy-btn {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text-muted);
+      cursor: pointer;
+      font-size: 0.7rem;
+      padding: 0.2rem 0.6rem;
+      transition: all 0.2s ease;
+    }
+
+    .detail-copy-btn:hover {
+      color: var(--text-primary);
+      border-color: rgba(255,255,255,0.2);
+    }
+
+    /* Timeline */
+    .detail-timeline {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      max-height: 340px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .detail-timeline::-webkit-scrollbar {
+      width: 4px;
+    }
+
+    .detail-timeline::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 2px;
+    }
+
+    .timeline-entry {
+      display: flex;
+      gap: 0.75rem;
+      position: relative;
+      padding-bottom: 0.875rem;
+    }
+
+    .timeline-entry:last-child {
+      padding-bottom: 0;
+    }
+
+    .timeline-left {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      flex-shrink: 0;
+      width: 16px;
+    }
+
+    .timeline-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      margin-top: 3px;
+      border: 2px solid;
+    }
+
+    .timeline-dot.po { border-color: var(--po-color); background: rgba(192,132,252,0.3); }
+    .timeline-dot.tl { border-color: var(--tl-color); background: rgba(74,222,128,0.3); }
+    .timeline-dot.dev { border-color: var(--dev-color); background: rgba(96,165,250,0.3); }
+    .timeline-dot.qa { border-color: var(--qa-color); background: rgba(251,191,36,0.3); }
+
+    .timeline-dot.active {
+      animation: pulse-dot 1.5s infinite;
+    }
+
+    @keyframes pulse-dot {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(96,165,250,0.4); }
+      50% { box-shadow: 0 0 0 5px rgba(96,165,250,0); }
+    }
+
+    .timeline-dot.active.po {
+      animation: pulse-dot-po 1.5s infinite;
+    }
+
+    @keyframes pulse-dot-po {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(192,132,252,0.4); }
+      50% { box-shadow: 0 0 0 5px rgba(192,132,252,0); }
+    }
+
+    .timeline-line {
+      flex: 1;
+      width: 1px;
+      background: var(--border);
+      margin-top: 3px;
+    }
+
+    .timeline-entry:last-child .timeline-line {
+      display: none;
+    }
+
+    .timeline-content {
+      flex: 1;
+      min-width: 0;
+      padding-top: 1px;
+    }
+
+    .timeline-meta {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin-bottom: 0.2rem;
+    }
+
+    .timeline-time {
+      font-family: monospace;
+      font-size: 0.7rem;
+      color: var(--text-muted);
+    }
+
+    .timeline-seq {
+      font-size: 0.65rem;
+      color: var(--text-muted);
+      background: rgba(255,255,255,0.05);
+      padding: 0.05rem 0.35rem;
+      border-radius: 3px;
+    }
+
+    .timeline-message {
+      font-size: 0.8rem;
+      color: var(--text-secondary);
+      line-height: 1.4;
+      word-break: break-word;
+    }
+
+    .timeline-entry.timeline-current .timeline-message {
+      color: var(--text-primary);
+      font-weight: 500;
+    }
+
+    .timeline-decision {
+      margin-top: 0.375rem;
+      font-size: 0.75rem;
+      color: var(--dev-color);
+      font-style: italic;
+      padding-left: 0.5rem;
+      border-left: 2px solid rgba(96,165,250,0.3);
+    }
+
+    .timeline-empty {
+      text-align: center;
+      padding: 2rem;
+      color: var(--text-muted);
+      font-size: 0.8rem;
+    }
+
+    /* Detail section count badge */
+    .detail-count-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: rgba(255,255,255,0.07);
+      border-radius: 6px;
+      font-size: 0.65rem;
+      padding: 0.1rem 0.4rem;
+      color: var(--text-muted);
+      margin-left: 0.5rem;
+      font-weight: 600;
+    }
+
     /* Responsive */
     @media (max-width: 1200px) {
       .main {
@@ -498,6 +994,10 @@
 
       .kanban {
         grid-template-columns: repeat(2, 1fr);
+      }
+
+      .detail-panel {
+        width: 100vw;
       }
     }
   </style>
@@ -531,12 +1031,12 @@
 
           <!-- Agent Progress — po + tl static, dev agents injected dynamically, qa static -->
           <div class="agent-progress" id="agentProgress">
-            <div class="agent-phase pending po" id="phase-po">
+            <div class="agent-phase pending po" id="phase-po" onclick="openAgentDetail('po')" title="Click to view details">
               <div class="agent-icon">📋</div>
               <div class="agent-name">Product Owner</div>
               <div class="agent-status">Pending</div>
             </div>
-            <div class="agent-phase pending tl" id="phase-tl">
+            <div class="agent-phase pending tl" id="phase-tl" onclick="openAgentDetail('tl')" title="Click to view details">
               <div class="agent-icon">🏗️</div>
               <div class="agent-name">Tech Lead</div>
               <div class="agent-status">Pending</div>
@@ -549,14 +1049,14 @@
 
           <!-- Phase Details — po + tl static, dev + QA dynamic -->
           <div class="phase-details" id="phaseDetails">
-            <div class="phase-card po" id="card-po">
+            <div class="phase-card po" id="card-po" onclick="openAgentDetail('po')" title="Click to view details">
               <div class="phase-card-header">
                 <div class="phase-card-title">📋 Product Owner</div>
                 <div class="phase-duration" id="duration-po">-</div>
               </div>
               <div class="phase-output" id="output-po">Waiting...</div>
             </div>
-            <div class="phase-card tl" id="card-tl">
+            <div class="phase-card tl" id="card-tl" onclick="openAgentDetail('tl')" title="Click to view details">
               <div class="phase-card-header">
                 <div class="phase-card-title">🏗️ Tech Lead</div>
                 <div class="phase-duration" id="duration-tl">-</div>
@@ -633,17 +1133,98 @@
     <span id="connectionText">Connecting...</span>
   </div>
 
+  <!-- ── Agent Detail Panel ── -->
+  <div class="detail-overlay" id="agentDetailOverlay" onclick="closeAgentDetail()"></div>
+
+  <div class="detail-panel" id="agentDetailPanel">
+    <!-- Header -->
+    <div class="detail-header">
+      <div class="detail-agent-info">
+        <div class="detail-icon-wrap dev" id="detailIconWrap">
+          <span id="detailIcon">💻</span>
+        </div>
+        <div>
+          <div class="detail-agent-name" id="detailName">Agent</div>
+          <div class="detail-agent-role" id="detailRole">Role</div>
+        </div>
+      </div>
+      <button class="detail-close" onclick="closeAgentDetail()">✕</button>
+    </div>
+
+    <!-- Scrollable Body -->
+    <div class="detail-body" id="detailBody">
+
+      <!-- Status -->
+      <div>
+        <div class="detail-section-label">Status</div>
+        <div class="detail-status-row">
+          <div class="detail-status-pill pending" id="detailStatusPill">
+            <div class="detail-status-dot"></div>
+            <span id="detailStatusText">Pending</span>
+          </div>
+          <div class="detail-elapsed" id="detailElapsed">-</div>
+        </div>
+      </div>
+
+      <!-- Task Assigned -->
+      <div id="detailTaskSection">
+        <div class="detail-section-label">Task Assigned</div>
+        <div class="detail-task-box" id="detailTaskBox">
+          <div class="detail-task-title" id="detailTaskTitle">-</div>
+          <div class="detail-task-desc" id="detailTaskDesc"></div>
+          <div class="detail-task-pairing" id="detailTaskPairing" style="display:none"></div>
+        </div>
+      </div>
+
+      <!-- Current Action (only shown while running) -->
+      <div id="detailCurrentSection" style="display:none">
+        <div class="detail-section-label">Current Action</div>
+        <div class="detail-current-action dev" id="detailCurrentAction">
+          <span class="detail-current-icon">⚡</span>
+          <span id="detailCurrentText">Working...</span>
+        </div>
+      </div>
+
+      <!-- Output -->
+      <div id="detailOutputSection" style="display:none">
+        <div class="detail-output-header">
+          <div class="detail-section-label" style="margin-bottom:0">Output</div>
+          <button class="detail-copy-btn" onclick="copyDetailOutput()">Copy</button>
+        </div>
+        <pre class="detail-output-pre" id="detailOutputPre">No output yet</pre>
+      </div>
+
+      <!-- Activity Timeline -->
+      <div>
+        <div class="detail-section-label">
+          Activity Timeline
+          <span class="detail-count-badge" id="detailTimelineCount">0</span>
+        </div>
+        <div class="detail-timeline" id="detailTimeline">
+          <div class="timeline-empty">No activity yet</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
   <script>
-    // State
+    // ── State ─────────────────────────────────────────────────────────────────
     let state = {
       status: 'idle',
       requirement: '',
       phases: {},
+      phaseOrder: ['po', 'tl'],
+      devAgents: [],
+      qaAgents: [],
       kanban: { backlog: [], inProgress: [], review: [], done: [] },
       logs: [],
     };
 
-    // WebSocket connection
+    // ── Detail Panel State ────────────────────────────────────────────────────
+    let openAgentKey = null;
+
+    // ── WebSocket ─────────────────────────────────────────────────────────────
     const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${wsProtocol}//${location.host}`;
     let ws = null;
@@ -653,22 +1234,18 @@
       ws = new WebSocket(wsUrl);
 
       ws.onopen = () => {
-        console.log('Connected to dashboard');
         reconnectAttempts = 0;
         updateConnectionStatus(true);
       };
 
       ws.onclose = () => {
         updateConnectionStatus(false);
-        // Reconnect after delay
         const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000);
         setTimeout(connect, delay);
         reconnectAttempts++;
       };
 
-      ws.onerror = (err) => {
-        console.error('WebSocket error:', err);
-      };
+      ws.onerror = (err) => console.error('WebSocket error:', err);
 
       ws.onmessage = (event) => {
         const data = JSON.parse(event.data);
@@ -708,17 +1285,33 @@
         case 'phase:start':
           state.currentPhase = data.agent;
           state.phases = data.state.phases;
+          // ถ้าเป็น re-activation (dev ถูกส่งกลับมาแก้) ให้แสดง badge
+          if (data.reactivated) {
+            const phaseEl = document.getElementById(`phase-${data.agent}`);
+            if (phaseEl) {
+              let badge = phaseEl.querySelector('.fix-badge');
+              if (!badge) {
+                badge = document.createElement('div');
+                badge.className = 'fix-badge';
+                phaseEl.appendChild(badge);
+              }
+              badge.textContent = `🔁 Fix #${data.fixRound}`;
+            }
+          }
           renderPhaseProgress();
+          if (openAgentKey) updateDetailPanel();
           break;
 
         case 'phase:output':
           state.phases = data.state.phases;
           renderPhaseProgress();
+          if (openAgentKey) updateDetailPanel();
           break;
 
         case 'log':
           state.logs.push(data.entry);
           renderActivityLog();
+          if (openAgentKey) updateDetailPanel();
           break;
 
         case 'kanban':
@@ -730,6 +1323,7 @@
           state = data.state;
           updateStatus('complete');
           renderFullState();
+          if (openAgentKey) updateDetailPanel();
           break;
 
         case 'error':
@@ -742,10 +1336,234 @@
       }
     }
 
+    // ── Detail Panel ──────────────────────────────────────────────────────────
+
+    function openAgentDetail(key) {
+      openAgentKey = key;
+      document.getElementById('agentDetailOverlay').classList.add('open');
+      document.getElementById('agentDetailPanel').classList.add('open');
+      updateDetailPanel();
+    }
+
+    function closeAgentDetail() {
+      openAgentKey = null;
+      document.getElementById('agentDetailOverlay').classList.remove('open');
+      document.getElementById('agentDetailPanel').classList.remove('open');
+    }
+
+    function getAgentMeta(key) {
+      if (key === 'po') {
+        return {
+          icon: '📋', name: 'Product Owner', colorClass: 'po', role: 'Product Owner',
+          task: { title: 'Sprint Requirement Analysis', desc: state.requirement || 'Analyze requirements and write user stories' },
+          pairing: null,
+        };
+      }
+      if (key === 'tl') {
+        return {
+          icon: '🏗️', name: 'Tech Lead', colorClass: 'tl', role: 'Tech Lead',
+          task: { title: 'Technical Planning', desc: 'Break down requirements into development tasks and assign to dev agents' },
+          pairing: null,
+        };
+      }
+      if (key.startsWith('dev-')) {
+        const agentData = (state.devAgents || []).find(a => a.key === key);
+        const task = agentData?.task;
+        return {
+          icon: '💻',
+          name: agentData?.name || key,
+          colorClass: 'dev',
+          role: 'Developer',
+          task: task ? { title: task.title || task, desc: task.description || '' } : null,
+          pairing: null,
+        };
+      }
+      if (key.startsWith('qa-')) {
+        const agentData = (state.qaAgents || []).find(a => a.key === key);
+        const devResult = agentData?.devResult;
+        const devTask = devResult?.task;
+        return {
+          icon: '🧪',
+          name: agentData?.name || key,
+          colorClass: 'qa',
+          role: 'QA Engineer',
+          task: devTask
+            ? { title: 'QA: ' + (devTask.title || devTask), desc: devTask.description || '' }
+            : { title: 'Quality Assurance', desc: 'Review and test the developer output' },
+          pairing: devResult?.key ? `Reviewing ${devResult.key}` : null,
+        };
+      }
+      return { icon: '🤖', name: key, colorClass: 'dev', role: key, task: null, pairing: null };
+    }
+
+    function updateDetailPanel() {
+      if (!openAgentKey) return;
+      const key = openAgentKey;
+      const meta = getAgentMeta(key);
+      const phaseData = (state.phases || {})[key] || {};
+      const status = phaseData.status || 'pending';
+
+      // Filter logs for this agent
+      const agentLogs = (state.logs || []).filter(log => {
+        const la = (log.agent || '').toLowerCase();
+        return la === key || la === meta.name.toLowerCase();
+      });
+      const lastLog = agentLogs.length > 0 ? agentLogs[agentLogs.length - 1] : null;
+
+      // ── Header ──
+      document.getElementById('detailIcon').textContent = meta.icon;
+      document.getElementById('detailName').textContent = meta.name;
+      document.getElementById('detailRole').textContent = meta.role;
+      const iconWrap = document.getElementById('detailIconWrap');
+      iconWrap.className = `detail-icon-wrap ${meta.colorClass}`;
+
+      // ── Status Pill ──
+      const pill = document.getElementById('detailStatusPill');
+      const statusText = document.getElementById('detailStatusText');
+      pill.className = `detail-status-pill ${status}`;
+      const fixRound = phaseData.fixRound || 0;
+      if (status === 'running') {
+        statusText.textContent = fixRound > 0 ? `Fixing (round ${fixRound + 1})` : 'Running';
+      } else if (status === 'complete') {
+        statusText.textContent = 'Complete';
+      } else {
+        statusText.textContent = 'Pending';
+      }
+
+      // ── Elapsed ──
+      const elapsedEl = document.getElementById('detailElapsed');
+      if (phaseData.duration && phaseData.duration > 0) {
+        elapsedEl.textContent = formatDuration(phaseData.duration);
+      } else if (status === 'running' && phaseData.startTime) {
+        elapsedEl.textContent = formatDuration(Date.now() - phaseData.startTime);
+      } else {
+        elapsedEl.textContent = '-';
+      }
+
+      // ── Task Assigned ──
+      const taskSection = document.getElementById('detailTaskSection');
+      const taskTitleEl = document.getElementById('detailTaskTitle');
+      const taskDescEl = document.getElementById('detailTaskDesc');
+      const taskPairingEl = document.getElementById('detailTaskPairing');
+
+      if (meta.task) {
+        taskSection.style.display = '';
+        taskTitleEl.textContent = meta.task.title || '-';
+        taskDescEl.textContent = meta.task.desc || '';
+        taskDescEl.style.display = meta.task.desc ? '' : 'none';
+        if (meta.pairing) {
+          taskPairingEl.style.display = '';
+          taskPairingEl.innerHTML = `<span>🔗</span><span>${escapeHtml(meta.pairing)}</span>`;
+        } else {
+          taskPairingEl.style.display = 'none';
+        }
+      } else {
+        taskSection.style.display = 'none';
+      }
+
+      // ── Current Action ──
+      const currentSection = document.getElementById('detailCurrentSection');
+      const currentAction = document.getElementById('detailCurrentAction');
+      const currentText = document.getElementById('detailCurrentText');
+      if (status === 'running') {
+        currentSection.style.display = '';
+        currentAction.className = `detail-current-action ${meta.colorClass}`;
+        currentText.textContent = lastLog?.message || 'Working...';
+      } else {
+        currentSection.style.display = 'none';
+      }
+
+      // ── Output ──
+      const outputSection = document.getElementById('detailOutputSection');
+      const outputPre = document.getElementById('detailOutputPre');
+      if (phaseData.output) {
+        outputSection.style.display = '';
+        outputPre.textContent = phaseData.output;
+      } else if (status === 'running') {
+        outputSection.style.display = '';
+        outputPre.textContent = 'Generating…';
+      } else if (status === 'pending') {
+        outputSection.style.display = 'none';
+      } else {
+        outputSection.style.display = '';
+        outputPre.textContent = 'No output recorded';
+      }
+
+      // ── Activity Timeline ──
+      const timelineEl = document.getElementById('detailTimeline');
+      const timelineCount = document.getElementById('detailTimelineCount');
+      timelineCount.textContent = agentLogs.length;
+
+      if (agentLogs.length === 0) {
+        timelineEl.innerHTML = '<div class="timeline-empty">No activity yet</div>';
+      } else {
+        const wasAtBottom = timelineEl.scrollHeight - timelineEl.clientHeight <= timelineEl.scrollTop + 8;
+        timelineEl.innerHTML = agentLogs.map((log, i) => {
+          const time = log.timestamp ? log.timestamp.slice(11, 19) : '';
+          const isLast = i === agentLogs.length - 1;
+          const isCurrent = isLast && status === 'running';
+          const dotClass = `timeline-dot ${meta.colorClass}${isCurrent ? ' active' : ''}`;
+          return `
+            <div class="timeline-entry${isCurrent ? ' timeline-current' : ''}">
+              <div class="timeline-left">
+                <div class="${dotClass}"></div>
+                <div class="timeline-line"></div>
+              </div>
+              <div class="timeline-content">
+                <div class="timeline-meta">
+                  <span class="timeline-time">${escapeHtml(time)}</span>
+                  <span class="timeline-seq">#${i + 1}</span>
+                </div>
+                <div class="timeline-message">${escapeHtml(log.message || '')}</div>
+                ${log.decision ? `<div class="timeline-decision">→ ${escapeHtml(log.decision)}</div>` : ''}
+              </div>
+            </div>
+          `;
+        }).join('');
+        // Auto-scroll to bottom if was at bottom
+        if (wasAtBottom || status === 'running') {
+          timelineEl.scrollTop = timelineEl.scrollHeight;
+        }
+      }
+    }
+
+    function copyDetailOutput() {
+      const text = document.getElementById('detailOutputPre').textContent;
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = document.querySelector('.detail-copy-btn');
+        btn.textContent = 'Copied!';
+        setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
+      });
+    }
+
+    function formatDuration(ms) {
+      const s = Math.floor(ms / 1000);
+      if (s < 60) return `${s}s`;
+      const m = Math.floor(s / 60);
+      const rem = s % 60;
+      return `${m}m ${rem.toString().padStart(2, '0')}s`;
+    }
+
+    // Live elapsed timer for open panel
+    setInterval(() => {
+      if (!openAgentKey) return;
+      const phaseData = (state.phases || {})[openAgentKey] || {};
+      if (phaseData.status === 'running' && phaseData.startTime) {
+        const el = document.getElementById('detailElapsed');
+        if (el) el.textContent = formatDuration(Date.now() - phaseData.startTime);
+      }
+    }, 1000);
+
+    // Close panel on Escape key
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && openAgentKey) closeAgentDetail();
+    });
+
+    // ── Render Helpers ────────────────────────────────────────────────────────
+
     function updateConnectionStatus(connected) {
       const dot = document.getElementById('connectionDot');
       const text = document.getElementById('connectionText');
-
       dot.classList.toggle('connected', connected);
       text.textContent = connected ? 'Connected' : 'Disconnected';
     }
@@ -753,16 +1571,13 @@
     function updateStatus(status) {
       const badge = document.getElementById('statusBadge');
       const text = document.getElementById('statusText');
-
       badge.className = 'status-badge ' + status;
-
       const labels = {
         idle: 'Waiting for sprint',
         running: 'Sprint in progress',
         complete: 'Sprint complete',
         error: 'Sprint failed',
       };
-
       text.textContent = labels[status] || status;
     }
 
@@ -770,22 +1585,21 @@
       document.getElementById('requirementText').textContent =
         state.requirement || 'No sprint running';
       updateStatus(state.status);
-
-      // ถ้า state มี devAgents/qaAgents อยู่แล้ว (เช่น reconnect กลางคัน) ให้ render ก่อน
       if (state.devAgents && state.devAgents.length > 0) renderDevAgents(state.devAgents);
       if (state.qaAgents  && state.qaAgents.length  > 0) renderQaAgents(state.qaAgents);
       renderPhaseProgress();
       renderKanban();
       renderActivityLog();
+      if (openAgentKey) updateDetailPanel();
     }
 
-    // สร้าง HTML elements สำหรับ dev agents แบบ dynamic
     function renderDevAgents(devAgents) {
       const progressSlot = document.getElementById('devAgentsProgress');
       const cardsSlot = document.getElementById('devCardsContainer');
 
       progressSlot.innerHTML = devAgents.map(agent => `
-        <div class="agent-phase pending dev" id="phase-${agent.key}">
+        <div class="agent-phase pending dev" id="phase-${agent.key}"
+             onclick="openAgentDetail('${escapeAttr(agent.key)}')" title="Click to view details">
           <div class="agent-icon">💻</div>
           <div class="agent-name">${escapeHtml(agent.name)}</div>
           <div class="agent-status">Pending</div>
@@ -793,7 +1607,8 @@
       `).join('');
 
       cardsSlot.innerHTML = devAgents.map(agent => `
-        <div class="phase-card dev" id="card-${agent.key}">
+        <div class="phase-card dev" id="card-${agent.key}"
+             onclick="openAgentDetail('${escapeAttr(agent.key)}')" title="Click to view details">
           <div class="phase-card-header">
             <div class="phase-card-title">💻 ${escapeHtml(agent.name)}</div>
             <div class="phase-duration" id="duration-${agent.key}">-</div>
@@ -803,13 +1618,13 @@
       `).join('');
     }
 
-    // สร้าง HTML elements สำหรับ QA agents แบบ dynamic
     function renderQaAgents(qaAgents) {
       const progressSlot = document.getElementById('qaAgentsProgress');
       const cardsSlot    = document.getElementById('qaCardsContainer');
 
       progressSlot.innerHTML = qaAgents.map(agent => `
-        <div class="agent-phase pending qa" id="phase-${agent.key}">
+        <div class="agent-phase pending qa" id="phase-${agent.key}"
+             onclick="openAgentDetail('${escapeAttr(agent.key)}')" title="Click to view details">
           <div class="agent-icon">🧪</div>
           <div class="agent-name">${escapeHtml(agent.name)}</div>
           <div class="agent-status">Pending</div>
@@ -817,7 +1632,8 @@
       `).join('');
 
       cardsSlot.innerHTML = qaAgents.map(agent => `
-        <div class="phase-card qa" id="card-${agent.key}">
+        <div class="phase-card qa" id="card-${agent.key}"
+             onclick="openAgentDetail('${escapeAttr(agent.key)}')" title="Click to view details">
           <div class="phase-card-header">
             <div class="phase-card-title">🧪 ${escapeHtml(agent.name)}</div>
             <div class="phase-duration" id="duration-${agent.key}">-</div>
@@ -827,16 +1643,9 @@
       `).join('');
     }
 
-    function escapeHtml(str) {
-      return String(str).replace(/[&<>"']/g, c =>
-        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
-      );
-    }
-
     function renderPhaseProgress() {
-      // ใช้ phaseOrder จาก state ถ้ามี ไม่งั้น fallback เป็น po, tl, dev agents, qa
       const devKeys = (state.devAgents || []).map(a => a.key);
-      const phases = state.phaseOrder || ['po', 'tl', ...devKeys, 'qa'];
+      const phases = state.phaseOrder || ['po', 'tl', ...devKeys];
 
       phases.forEach((phase) => {
         const phaseEl = document.getElementById(`phase-${phase}`);
@@ -844,24 +1653,28 @@
         const outputEl = document.getElementById(`output-${phase}`);
         const durationEl = document.getElementById(`duration-${phase}`);
 
-        // element อาจยังไม่ถูกสร้าง (ถ้า team:setup ยังไม่มา)
         if (!phaseEl || !cardEl) return;
 
         const phaseData = state.phases[phase] || {};
         const status = phaseData.status || 'pending';
         const isCurrent = state.currentPhase === phase;
 
-        // dev-N ใช้ class 'dev', qa-N ใช้ class 'qa' เพื่อให้ได้สีเดียวกัน
         const colorClass = phase.startsWith('dev-') ? 'dev'
                          : phase.startsWith('qa-')  ? 'qa'
                          : phase;
         phaseEl.className = `agent-phase ${colorClass} ${status}`;
 
         const statusEl = phaseEl.querySelector('.agent-status');
+        const phaseLabel = phaseData.currentPhaseLabel || '';
         if (status === 'running') {
-          statusEl.innerHTML = '<span class="spinner">⏳</span> Working...';
+          const fixRound = phaseData.fixRound || 0;
+          const label = fixRound > 0 ? `Fixing (round ${fixRound + 1})` : 'Working...';
+          statusEl.innerHTML = `<span class="spinner">⏳</span> ${label}`;
         } else if (status === 'complete') {
           statusEl.textContent = '✓ Complete';
+          // Remove fix badge once complete
+          const badge = phaseEl.querySelector('.fix-badge');
+          if (badge) badge.remove();
         } else {
           statusEl.textContent = 'Pending';
         }
@@ -872,14 +1685,16 @@
         cardEl.className = `phase-card ${colorCardClass}${isCurrent ? ' active' : ''}`;
 
         const output = phaseData.output || '';
-        outputEl.textContent = output.slice(0, 150) + (output.length > 150 ? '...' : '');
+        if (outputEl) outputEl.textContent = output.slice(0, 150) + (output.length > 150 ? '...' : '');
 
-        if (phaseData.duration) {
-          durationEl.textContent = `${Math.round(phaseData.duration / 1000)}s`;
-        } else if (status === 'running') {
-          durationEl.textContent = 'Running...';
-        } else {
-          durationEl.textContent = '-';
+        if (durationEl) {
+          if (phaseData.duration) {
+            durationEl.textContent = formatDuration(phaseData.duration);
+          } else if (status === 'running') {
+            durationEl.textContent = 'Running...';
+          } else {
+            durationEl.textContent = '-';
+          }
         }
       });
     }
@@ -896,13 +1711,12 @@
 
         container.innerHTML = cards.map((card) => `
           <div class="kanban-card ${card.agent || ''}">
-            <div class="kanban-card-id">${card.id}</div>
-            <div class="kanban-card-title">${card.title || 'Untitled'}</div>
+            <div class="kanban-card-id">${escapeHtml(card.id)}</div>
+            <div class="kanban-card-title">${escapeHtml(card.title || 'Untitled')}</div>
           </div>
         `).join('');
       });
 
-      // Update task progress
       const done = (state.kanban.done || []).length;
       const total = Object.values(state.kanban).flat().length;
       document.getElementById('taskProgress').textContent = `${done}/${total} tasks`;
@@ -922,27 +1736,41 @@
         return;
       }
 
-      // Show last 50 logs
       const recentLogs = logs.slice(-50).reverse();
 
       container.innerHTML = recentLogs.map((log) => {
         const time = log.timestamp ? log.timestamp.slice(11, 19) : '';
-        const agentKey = (log.agent || '').toLowerCase();
+        const raw = (log.agent || '').toLowerCase();
+        // Map dynamic agent keys to color class
+        const agentColorClass = raw.startsWith('dev-') ? 'dev'
+                               : raw.startsWith('qa-') ? 'qa'
+                               : raw;
         const decisionHtml = log.decision
-          ? `<div class="log-decision">→ ${log.decision}</div>`
+          ? `<div class="log-decision">→ ${escapeHtml(log.decision)}</div>`
           : '';
-
         return `
           <div class="log-entry">
-            <span class="log-time">${time}</span>
-            <span class="log-agent ${agentKey}">${log.agent}</span>
-            <span class="log-message">${log.message}${decisionHtml}</span>
+            <span class="log-time">${escapeHtml(time)}</span>
+            <span class="log-agent ${agentColorClass}">${escapeHtml(log.agent || '')}</span>
+            <span class="log-message">${escapeHtml(log.message || '')}${decisionHtml}</span>
           </div>
         `;
       }).join('');
     }
 
-    // Start
+    // ── Escape Helpers ────────────────────────────────────────────────────────
+
+    function escapeHtml(str) {
+      return String(str).replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])
+      );
+    }
+
+    function escapeAttr(str) {
+      return String(str).replace(/['"]/g, c => ({ "'": '&#39;', '"': '&quot;' }[c]));
+    }
+
+    // ── Start ─────────────────────────────────────────────────────────────────
     connect();
   </script>
 </body>
