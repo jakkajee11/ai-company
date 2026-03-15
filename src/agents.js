@@ -40,19 +40,50 @@ Be concise and actionable. Output plain text, no markdown headers.`,
     abbr: 'TL',
     color: 'green',
     model: 'claude-sonnet-4-6',
-    maxTokens: 1000,
+    maxTokens: 1200,
     systemPrompt: `You are a Tech Lead / Dev Lead in an Agile team.
-Given a requirement and user stories, produce:
+Given a requirement and user stories from the PO, produce:
 1. Recommended tech stack with one-line justification per item
 2. High-level architecture (3-5 components, how they connect)
-3. Exactly 3 developer tasks — each with:
-   - Task name
-   - Files/modules to create (e.g. src/auth/authService.ts)
-   - Key functions or classes needed
+3. Developer sub-tasks grouped BY USER STORY — 1 developer owns 1 story completely.
+   Each developer implements ALL sub-tasks for their story. No story is shared between developers.
+
+   REQUIRED FORMAT — repeat this block for EACH user story:
+   ---
+   US-X Owner: Dev [N]
+   Sub-tasks for US-X:
+     Task: [sub-task name]
+     Files: [specific file paths]
+     Functions: [key function names]
+     ---
+     Task: [sub-task name]
+     Files: [specific file paths]
+     Functions: [key function names]
+   ---
+
+   Design 1-3 sub-tasks per user story. Each sub-task must use files that belong ONLY to that story's module.
+
 4. One Architecture Decision Record (ADR):
    Decision: [what]
    Because: [why]
    Trade-off: [what we give up]
+
+5. **Story Boundary Strategy** — CRITICAL: zero merge conflicts between developers:
+   - Assign each user story to a distinct module/folder (e.g. src/auth/, src/api/, src/data/)
+   - No two stories write to the same file
+   - Shared utilities go in src/shared/ — assign ownership to one story's developer
+
+6. **Project Scaffold Structure** — MUST include this section.
+   You are responsible for creating the project structure. Developers MUST build on this scaffold only.
+===SCAFFOLD===
+src/
+  index.js
+  config/
+    config.js
+===END_SCAFFOLD===
+
+The scaffold must support parallel development with minimal overlap.
+Each file should be a separate line with proper indentation.
 Output plain text. Be specific about file paths and function names.`,
   },
 
@@ -285,16 +316,19 @@ export async function runDevAgentForTask(task, requirement, tlOutput, taskDir, o
 }
 
 async function callSimulateDevTask(task, requirement, tlOutput, persona) {
-  const baseSystem = `You are a Senior Developer. Describe your implementation plan for ONE specific task.
+  const baseSystem = `You are a Senior Developer. You OWN a complete user story and must describe your implementation plan for ALL its sub-tasks.
 Be specific about file names and function signatures. Do NOT write full code.`;
   const system = persona ? `${persona}\n\n---\n\n${baseSystem}` : baseSystem;
+  const devOnlySubtasks = (task.subtasks || []).filter(st => !st.type || st.type === 'dev');
+  const subtaskLines = devOnlySubtasks.map((st, i) => `${i + 1}. ${st.title}`).join('\n');
+  const subtasksBlock = subtaskLines ? `\nSub-tasks (implement ALL):\n${subtaskLines}\n` : '';
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 800,
     system,
     messages: [{
       role: 'user',
-      content: `Requirement: ${requirement}\n\nYour task: ${task.title}\n${task.files ? `Files: ${task.files}` : ''}\n\nArchitecture:\n${tlOutput}\n\nDescribe your plan for this task only.`,
+      content: `Requirement: ${requirement}\n\nYour user story: ${task.title}${subtasksBlock}\n${task.files ? `Files: ${task.files}` : ''}\n\nArchitecture:\n${tlOutput}\n\nDescribe your full implementation plan for this story.`,
     }],
   });
   return response.content[0].text;
@@ -329,22 +363,26 @@ async function runClaudeCodeForTask(task, requirement, tlOutput, taskDir, sprint
 }
 
 async function fallbackDevTaskOutput(task, requirement, tlOutput, taskDir, persona) {
-  const baseSystem = `You are a Senior Developer. Implement ONE specific task.
+  const baseSystem = `You are a Senior Developer. You OWN a complete user story — implement ALL its sub-tasks.
+Use Tech Lead's scaffold structure. Do NOT create your own project.
 Respond in this format for EACH file:
 
 ===FILE: path/to/file.ts===
 [file contents]
 ===END===
 
-Focus only on your assigned task. Write clean, production-ready code.`;
+Write clean, production-ready code. Include ALL files needed for your user story.`;
   const system = persona ? `${persona}\n\n---\n\n${baseSystem}` : baseSystem;
+  const devOnlySubtasks = (task.subtasks || []).filter(st => !st.type || st.type === 'dev');
+  const subtaskLines = devOnlySubtasks.map((st, i) => `${i + 1}. ${st.title}`).join('\n');
+  const subtasksBlock = subtaskLines ? `\nSub-tasks (implement ALL):\n${subtaskLines}\n` : '';
   const response = await client.messages.create({
     model: 'claude-sonnet-4-6',
     max_tokens: 1500,
     system,
     messages: [{
       role: 'user',
-      content: `Requirement: ${requirement}\n\nYour task: ${task.title}\n${task.files ? `Files: ${task.files}` : ''}\n\nArchitecture:\n${tlOutput}\n\nImplement your task only.`,
+      content: `Requirement: ${requirement}\n\nYour user story: ${task.title}${subtasksBlock}\n${task.files ? `Files: ${task.files}` : ''}\n\nArchitecture:\n${tlOutput}\n\nImplement all sub-tasks for your story.`,
     }],
   });
   const output = response.content[0].text;
@@ -354,24 +392,40 @@ Focus only on your assigned task. Write clean, production-ready code.`;
 
 function buildClaudeCodeTaskPrompt(task, requirement, tlOutput, persona) {
   const identityBlock = persona ? `${persona}\n\n---\n\n` : '';
-  return `${identityBlock}You are a Developer agent in an AI Agile team. You are responsible for ONE specific task.
 
-## Your assigned task
+  // Build sub-tasks section — dev-only sub-tasks (type: 'dev' or no type)
+  const devOnlySubtasks = (task.subtasks || []).filter(st => !st.type || st.type === 'dev');
+  const subtaskLines = devOnlySubtasks.map((st, i) =>
+    `${i + 1}. ${st.title}${st.files ? `\n   Files: ${st.files}` : ''}`
+  ).join('\n');
+  const subtasksSection = subtaskLines
+    ? `\n## Sub-tasks from Tech Lead (implement ALL of these)\n${subtaskLines}\n`
+    : '';
+
+  return `${identityBlock}You are a Developer agent in an AI Agile team.
+You OWN the entire user story below — you must implement ALL of its sub-tasks from start to finish.
+No other developer will touch this story. You are fully responsible for its delivery.
+
+## Your User Story
+${task.id ? `ID: ${task.id.toUpperCase()}` : ''}
 ${task.title}
-${task.files ? `\nFiles to create:\n${task.files}` : ''}
+${subtasksSection}
+${task.files ? `\nAll files to create:\n${task.files}` : ''}
 
 ## Overall requirement (context only)
 ${requirement}
 
-## Architecture from Tech Lead
+## Architecture & Scaffold from Tech Lead
 ${tlOutput}
 
-## Instructions
-1. Implement ONLY your assigned task above
-2. Create the files listed (or determine appropriate files if not specified)
-3. Write clean, production-ready code with error handling
-4. Add a brief comment at the top of each file explaining its purpose
-5. Do NOT implement tasks assigned to other developers
+## CRITICAL: Project Structure Rules
+1. Tech Lead has already created the project scaffold above. You MUST NOT create your own project structure.
+2. Build ONLY on the existing files and directories defined in the scaffold.
+3. Do NOT run npm init, git init, or create top-level directories — those belong to Tech Lead.
+4. If the scaffold directory does not exist yet, STOP and output: "WAITING: Tech Lead scaffold not ready."
+5. Implement ALL sub-tasks listed above — this is your complete responsibility.
+6. Do NOT touch files assigned to other developers' user stories.
+7. Write clean, production-ready code with error handling and brief file-level comments.
 
 Start implementing now.`;
 }
@@ -380,20 +434,114 @@ function buildTaskContext(task, requirement, tlOutput, mode, persona) {
   const identityBlock = persona
     ? `## Identity\n${persona}\n\n`
     : '';
+  const storyRef = task.id
+    ? `## User Story Ownership\nYou own ${task.id.toUpperCase()} completely — implement ALL sub-tasks below.\n\n`
+    : '';
+
+  const devOnlySubtasksForCtx = (task.subtasks || []).filter(st => !st.type || st.type === 'dev');
+  const subtaskLines = devOnlySubtasksForCtx.map((st, i) =>
+    `${i + 1}. ${st.title}${st.files ? ` (${st.files})` : ''}`
+  ).join('\n');
+  const subtasksSection = subtaskLines
+    ? `## Sub-tasks to Implement (all yours)\n${subtaskLines}\n\n`
+    : '';
+
   return `# Task Context
 Generated: ${new Date().toISOString()}
 Mode: ${mode}
 
-${identityBlock}## Your Task
+${identityBlock}${storyRef}${subtasksSection}## User Story Title
 ${task.title}
-${task.files ? `Files: ${task.files}` : ''}
+${task.files ? `\nAll files: ${task.files}` : ''}
+
+## IMPORTANT: Use Tech Lead's scaffold — do not create your own project structure.
 
 ## Requirement
 ${requirement}
 
-## Architecture
+## Architecture & Scaffold (from Tech Lead)
 ${tlOutput}
 `;
+}
+
+// ─── QA Sub-task Designer ──────────────────────────────────────────────────────
+
+/**
+ * designQaSubtasks — QA agent designs its own test sub-tasks for a user story.
+ * Called AFTER TL creates dev sub-tasks, so QA can see what dev will build.
+ *
+ * @param {object} story             - { id, title } user story
+ * @param {object[]} devSubtasks     - dev sub-tasks from TL (array of { id, title })
+ * @param {string} requirement       - original user requirement
+ * @param {string} qaPersonaIdentity - QA persona identity string (optional)
+ * @returns {Promise<object[]>}      - array of QA sub-tasks: { id, title, status, type }
+ */
+export async function designQaSubtasks(story, devSubtasks, requirement, qaPersonaIdentity) {
+  const baseSystem = `You are a QA Engineer planning test scenarios for a user story.
+Given the user story and its developer sub-tasks, design QA-specific sub-tasks:
+- Test cases: verify each developer sub-task's expected behavior
+- Edge cases: boundary conditions, empty/null inputs, concurrent access
+- Validation: security checks, input sanitization, error handling
+- Integration: end-to-end flows that span multiple sub-tasks
+
+Each QA sub-task must be a specific, actionable testing activity.
+
+Output EXACTLY in this format — one sub-task per line, 3-4 sub-tasks total:
+QA-SUBTASK: [concise test scenario title]
+QA-SUBTASK: [concise test scenario title]
+QA-SUBTASK: [concise test scenario title]
+
+No extra text, headers, or explanations — just the QA-SUBTASK lines.`;
+
+  const system = qaPersonaIdentity ? `${qaPersonaIdentity}\n\n---\n\n${baseSystem}` : baseSystem;
+
+  const devSubtaskLines = devSubtasks.length > 0
+    ? devSubtasks.map((t, i) => `${i + 1}. ${t.title}`).join('\n')
+    : '(no dev sub-tasks defined)';
+
+  try {
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 300,
+      system,
+      messages: [{
+        role: 'user',
+        content: `Requirement: ${requirement}\n\nUser Story: ${story?.title || 'Unknown'}\n\nDeveloper sub-tasks:\n${devSubtaskLines}\n\nDesign QA sub-tasks for this user story.`,
+      }],
+    });
+
+    const output = response.content[0].text;
+    const qaSubtasks = [];
+    let idx = 0;
+    output.split('\n').forEach(line => {
+      const match = line.match(/QA-SUBTASK:\s*(.+)/i);
+      if (match) {
+        qaSubtasks.push({
+          id: `${story?.id || 'us'}-qa-${idx++}`,
+          title: match[1].trim(),
+          status: 'pending',
+          type: 'qa',
+        });
+      }
+    });
+
+    // Fallback sub-tasks if parsing failed
+    if (qaSubtasks.length === 0) {
+      return [
+        { id: `${story?.id || 'us'}-qa-0`, title: 'Verify acceptance criteria and happy path', status: 'pending', type: 'qa' },
+        { id: `${story?.id || 'us'}-qa-1`, title: 'Test edge cases and invalid inputs', status: 'pending', type: 'qa' },
+        { id: `${story?.id || 'us'}-qa-2`, title: 'Security and error handling checks', status: 'pending', type: 'qa' },
+      ];
+    }
+
+    return qaSubtasks;
+  } catch (err) {
+    // Return safe fallback on error
+    return [
+      { id: `${story?.id || 'us'}-qa-0`, title: 'Verify acceptance criteria and happy path', status: 'pending', type: 'qa' },
+      { id: `${story?.id || 'us'}-qa-1`, title: 'Test edge cases and error handling', status: 'pending', type: 'qa' },
+    ];
+  }
 }
 
 // ─── QA Verdict Parser ─────────────────────────────────────────────────────────
@@ -802,4 +950,164 @@ function writeGeneratedFiles(output, projectDir) {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
     writeFileSync(fullPath, content.trim());
   }
+}
+
+// ─── Scaffold Parser & Creator ─────────────────────────────────────────────────
+
+/**
+ * Parse scaffold block from TL output and create project structure.
+ *
+ * @param {string} tlOutput - raw text from TL agent
+ * @param {string} projectDir - target project directory
+ * @param {object} opts - { mode, sprintLog }
+ * @returns {{ files: string[], created: boolean }}
+ */
+export function parseAndCreateScaffold(tlOutput, projectDir, opts = {}) {
+  const { mode = 'execute', sprintLog } = opts;
+
+  // Extract SCAFFOLD block
+  const scaffoldMatch = tlOutput.match(/===SCAFFOLD===\n([\s\S]*?)===END_SCAFFOLD===/i);
+
+  if (!scaffoldMatch) {
+    sprintLog?.('TL', 'No scaffold block found in output — will use default structure');
+    return { files: [], created: false };
+  }
+
+  const scaffoldContent = scaffoldMatch[1].trim();
+  const lines = scaffoldContent.split('\n').map(l => l.trimEnd()).filter(Boolean);
+
+  const files = [];
+  const dirs = new Set();
+
+  // Parse scaffold structure
+  for (const line of lines) {
+    // Skip empty lines
+    if (!line.trim()) continue;
+
+    // Calculate indentation level
+    const indent = line.search(/\S/);
+    const trimmed = line.trim();
+
+    // Determine if it's a directory (ends with /) or file
+    const isDir = trimmed.endsWith('/');
+    const path = trimmed.replace(/\/$/, '');
+
+    if (isDir) {
+      dirs.add(path);
+    } else if (trimmed.includes('.')) {
+      // It's a file (has extension)
+      files.push(path);
+      // Add parent directory
+      const parentDir = path.substring(0, path.lastIndexOf('/'));
+      if (parentDir) dirs.add(parentDir);
+    } else {
+      // It's a directory without trailing slash
+      dirs.add(path);
+    }
+  }
+
+  // In simulate mode, don't create files
+  if (mode === 'simulate') {
+    sprintLog?.('TL', `Scaffold planned: ${dirs.size} dirs, ${files.length} files (simulation — no files created)`);
+    return { files, created: false, dirs: Array.from(dirs) };
+  }
+
+  // Create directories
+  for (const dir of dirs) {
+    const fullPath = join(projectDir, dir);
+    if (!existsSync(fullPath)) {
+      mkdirSync(fullPath, { recursive: true });
+    }
+  }
+
+  // Create starter files
+  const createdFiles = [];
+  for (const filePath of files) {
+    const fullPath = join(projectDir, filePath);
+
+    // Skip if file already exists
+    if (existsSync(fullPath)) continue;
+
+    // Generate starter content based on file extension
+    const ext = filePath.split('.').pop()?.toLowerCase();
+    const starterContent = generateStarterContent(filePath, ext);
+
+    writeFileSync(fullPath, starterContent);
+    createdFiles.push(filePath);
+  }
+
+  // Create default package.json if not included
+  const packageJsonPath = join(projectDir, 'package.json');
+  if (!existsSync(packageJsonPath) && !files.includes('package.json')) {
+    const defaultPackageJson = {
+      name: 'ai-sprint-project',
+      version: '1.0.0',
+      description: 'Generated by AI Software Company Sprint',
+      main: 'src/index.js',
+      scripts: {
+        start: 'node src/index.js',
+        test: 'jest',
+      },
+    };
+    writeFileSync(packageJsonPath, JSON.stringify(defaultPackageJson, null, 2));
+    createdFiles.push('package.json');
+  }
+
+  sprintLog?.('TL', `Scaffold created: ${dirs.size} dirs, ${createdFiles.length} files`);
+  return { files: createdFiles, created: true, dirs: Array.from(dirs) };
+}
+
+/**
+ * Generate starter content for common file types
+ */
+function generateStarterContent(filePath, ext) {
+  const fileName = filePath.split('/').pop();
+
+  const templates = {
+    js: `// ${fileName}
+// Auto-generated by AI Software Company Sprint
+
+module.exports = {
+  // TODO: Implement
+};
+`,
+    ts: `// ${fileName}
+// Auto-generated by AI Software Company Sprint
+
+export interface ${toPascalCase(fileName.replace('.ts', ''))}Config {
+  // TODO: Define interface
+}
+
+export function ${toCamelCase(fileName.replace('.ts', ''))}(): void {
+  // TODO: Implement
+}
+`,
+    json: `{
+  "name": "${fileName.replace('.json', '')}",
+  "version": "1.0.0"
+}
+`,
+    md: `# ${fileName.replace('.md', '')}
+
+Auto-generated by AI Software Company Sprint.
+
+## Overview
+
+TODO: Add documentation
+`,
+  };
+
+  return templates[ext] || `// ${fileName}\n// Auto-generated by AI Software Company Sprint\n`;
+}
+
+function toPascalCase(str) {
+  return str
+    .split(/[-_\s]+/)
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join('');
+}
+
+function toCamelCase(str) {
+  const pascal = toPascalCase(str);
+  return pascal.charAt(0).toLowerCase() + pascal.slice(1);
 }

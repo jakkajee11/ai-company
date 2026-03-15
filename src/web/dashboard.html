@@ -401,6 +401,40 @@
       font-size: 0.65rem;
     }
 
+    /* Scaffold Status */
+    .scaffold-status {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 0.75rem;
+      margin-bottom: 0.75rem;
+      border-radius: 8px;
+      font-size: 0.75rem;
+      font-weight: 500;
+    }
+
+    .scaffold-status.waiting {
+      background: rgba(251, 191, 36, 0.1);
+      border: 1px solid rgba(251, 191, 36, 0.3);
+      color: var(--warning);
+    }
+
+    .scaffold-status.ready {
+      background: rgba(34, 197, 94, 0.1);
+      border: 1px solid rgba(34, 197, 94, 0.3);
+      color: var(--success);
+    }
+
+    .scaffold-status-icon {
+      font-size: 1rem;
+    }
+
+    .scaffold-files {
+      font-size: 0.65rem;
+      color: var(--text-muted);
+      margin-top: 0.25rem;
+    }
+
     .kanban-card {
       background: var(--bg-card);
       border-radius: 8px;
@@ -420,6 +454,110 @@
     .kanban-card.tl { border-left-color: var(--tl-color); }
     .kanban-card.dev { border-left-color: var(--dev-color); }
     .kanban-card.qa { border-left-color: var(--qa-color); }
+
+    /* Story/Task Hierarchy */
+    .kanban-card.story {
+      font-weight: 600;
+      background: rgba(255, 255, 255, 0.05);
+    }
+
+    .kanban-card.task {
+      margin-left: 0.75rem;
+      font-size: 0.7rem;
+      border-left-width: 2px;
+    }
+
+    .kanban-card-children-count {
+      font-size: 0.6rem;
+      color: var(--text-muted);
+      margin-top: 0.25rem;
+    }
+
+    .kanban-card-assigned-dev {
+      font-size: 0.6rem;
+      color: var(--dev-color);
+      margin-top: 0.15rem;
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+
+    /* Sub-task list inside user story cards */
+    .kanban-subtask-list {
+      margin-top: 0.5rem;
+      padding-top: 0.5rem;
+      border-top: 1px solid rgba(255,255,255,0.06);
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+    }
+
+    .kanban-subtask-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.3rem;
+      font-size: 0.63rem;
+      color: var(--text-secondary);
+      line-height: 1.3;
+    }
+
+    .kanban-subtask-item.in-progress {
+      color: var(--dev-color);
+    }
+
+    .kanban-subtask-item.done {
+      color: var(--success);
+      opacity: 0.7;
+    }
+
+    .kanban-subtask-icon {
+      flex-shrink: 0;
+      width: 12px;
+      text-align: center;
+      font-size: 0.58rem;
+      margin-top: 1px;
+    }
+
+    .kanban-subtask-title {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Sub-task section labels (dev vs qa) */
+    .kanban-subtask-section-label {
+      font-size: 0.5rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-top: 0.3rem;
+      margin-bottom: 0.15rem;
+      padding: 0.1rem 0.3rem;
+      border-radius: 3px;
+      display: inline-block;
+    }
+    .kanban-subtask-section-label.dev {
+      color: var(--dev-color);
+      background: rgba(96, 165, 250, 0.1);
+    }
+    .kanban-subtask-section-label.qa {
+      color: var(--qa-color);
+      background: rgba(251, 191, 36, 0.1);
+    }
+
+    /* TL review badge on story card */
+    .kanban-tl-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.2rem;
+      font-size: 0.55rem;
+      background: var(--tl-bg);
+      color: var(--tl-color);
+      border-radius: 4px;
+      padding: 0.1rem 0.35rem;
+      margin-top: 0.3rem;
+    }
 
     .kanban-card-id {
       font-size: 0.65rem;
@@ -1090,6 +1228,13 @@
             No sprint running. Start a sprint from the CLI to see progress here.
           </div>
 
+          <!-- Scaffold Status -->
+          <div class="scaffold-status waiting" id="scaffoldStatus" style="display: none;">
+            <span class="scaffold-status-icon">⏳</span>
+            <span id="scaffoldStatusText">Waiting for project scaffold...</span>
+            <div class="scaffold-files" id="scaffoldFiles" style="display: none;"></div>
+          </div>
+
           <!-- PO + TL strip -->
           <div class="po-tl-strip">
             <div class="agent-pill pending po" id="phase-po" onclick="openAgentDetail('po')" title="Click to view details">
@@ -1318,6 +1463,9 @@
         </div>
       </div>
 
+      <!-- Sub-tasks (shown for user story cards) -->
+      <div id="cardDetailSubtasks" style="display:none;"></div>
+
       <!-- Related Activity -->
       <div>
         <div class="detail-section-label">
@@ -1341,8 +1489,13 @@
       devAgents: [],
       reviewerAgents: [],
       qaAgents: [],
-      kanban: { backlog: [], inProgress: [], review: [], done: [] },
+      kanban: { backlog: [], inProgress: [], review: [], blocked: [], done: [] },
       logs: [],
+      // Scaffold state
+      scaffoldReady: false,
+      scaffoldFiles: [],
+      devBlocked: true,
+      devBlockReason: 'Waiting for Tech Lead to create project structure',
     };
 
     // ── Detail Panel State ────────────────────────────────────────────────────
@@ -1451,11 +1604,44 @@
           renderKanban();
           break;
 
+        case 'kanban:subtask':
+          // Sub-task attached to a user story by TL — update kanban
+          state.kanban = data.kanban;
+          renderKanban();
+          break;
+
+        case 'kanban:dev-assigned':
+          // Dev picked up a user story — show assignment on card
+          state.kanban = data.kanban;
+          renderKanban();
+          break;
+
         case 'sprint:done':
           state = data.state;
           updateStatus('complete');
           renderFullState();
           if (openAgentKey) updateDetailPanel();
+          break;
+
+        case 'scaffold:created':
+          state.scaffoldReady = data.created;
+          state.scaffoldFiles = data.files || [];
+          state.devBlocked = !data.created;
+          renderScaffoldStatus();
+          break;
+
+        case 'dev:waiting':
+          state.devBlocked = true;
+          state.devBlockReason = data.reason;
+          renderScaffoldStatus();
+          break;
+
+        case 'dev:unblocked':
+          state.devBlocked = false;
+          state.devBlockReason = null;
+          state.scaffoldReady = true;
+          state.scaffoldFiles = data.scaffoldFiles || [];
+          renderScaffoldStatus();
           break;
 
         case 'error':
@@ -1543,6 +1729,62 @@
       // Content
       document.getElementById('cardDetailTitle').textContent = card.title || 'Untitled';
       document.getElementById('cardDetailAgent').textContent = card.agent ? card.agent.toUpperCase() : '-';
+
+      // Sub-tasks section — split into dev vs QA (for user story cards)
+      const cardDetailSubtasksEl = document.getElementById('cardDetailSubtasks');
+      if (cardDetailSubtasksEl) {
+        const subtasks = card.subtasks || [];
+        const detailDevSubtasks = subtasks.filter(st => !st.type || st.type === 'dev');
+        const detailQaSubtasks  = subtasks.filter(st => st.type === 'qa');
+
+        if (subtasks.length > 0) {
+          cardDetailSubtasksEl.style.display = 'block';
+
+          const renderDetailSubtaskRows = (items, colorVar) => items.map(st => {
+            const icon = st.status === 'done' ? '✅' : st.status === 'in-progress' ? '🔄' : '📌';
+            const color = st.status === 'done' ? 'var(--success)' : st.status === 'in-progress' ? colorVar : 'var(--text-secondary)';
+            return `<div style="display:flex;align-items:flex-start;gap:0.4rem;padding:0.3rem 0;border-bottom:1px solid var(--border);font-size:0.75rem;color:${color}">
+              <span>${icon}</span>
+              <span>${escapeHtml(st.title)}</span>
+            </div>`;
+          }).join('');
+
+          let detailHtml = '';
+
+          if (detailDevSubtasks.length > 0) {
+            detailHtml += `
+              <div style="font-size:0.65rem;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:var(--dev-color);background:rgba(96,165,250,0.08);padding:0.2rem 0.4rem;border-radius:3px;margin-bottom:0.25rem;margin-top:0.25rem;">
+                ⚙ Dev Sub-tasks (${detailDevSubtasks.length})
+              </div>
+              ${renderDetailSubtaskRows(detailDevSubtasks, 'var(--dev-color)')}
+            `;
+          }
+
+          if (detailQaSubtasks.length > 0) {
+            detailHtml += `
+              <div style="font-size:0.65rem;font-weight:700;letter-spacing:0.07em;text-transform:uppercase;color:var(--qa-color);background:rgba(251,191,36,0.08);padding:0.2rem 0.4rem;border-radius:3px;margin-bottom:0.25rem;margin-top:0.5rem;">
+                🧪 QA Sub-tasks (${detailQaSubtasks.length})
+              </div>
+              ${renderDetailSubtaskRows(detailQaSubtasks, 'var(--qa-color)')}
+            `;
+          } else if (detailDevSubtasks.length > 0) {
+            detailHtml += `
+              <div style="font-size:0.65rem;color:var(--text-muted);margin-top:0.4rem;font-style:italic;">
+                🧪 QA sub-tasks — pending (QA team will design these)
+              </div>
+            `;
+          }
+
+          if (card.assignedDev) {
+            detailHtml += `<div style="font-size:0.7rem;color:var(--dev-color);margin-top:0.5rem;">🧑‍💻 Assigned: ${escapeHtml(card.assignedDev)}</div>`;
+          }
+
+          cardDetailSubtasksEl.innerHTML = detailHtml;
+        } else {
+          cardDetailSubtasksEl.style.display = 'none';
+          cardDetailSubtasksEl.innerHTML = '';
+        }
+      }
 
       // Related activity logs
       const relatedLogs = (state.logs || []).filter(log => {
@@ -1849,10 +2091,44 @@
       text.textContent = labels[status] || status;
     }
 
+    function renderScaffoldStatus() {
+      const statusEl = document.getElementById('scaffoldStatus');
+      const statusTextEl = document.getElementById('scaffoldStatusText');
+      const filesEl = document.getElementById('scaffoldFiles');
+
+      if (!statusEl) return;
+
+      // Only show during running state
+      if (state.status !== 'running') {
+        statusEl.style.display = 'none';
+        return;
+      }
+
+      statusEl.style.display = 'flex';
+
+      if (state.devBlocked) {
+        statusEl.className = 'scaffold-status waiting';
+        statusEl.querySelector('.scaffold-status-icon').textContent = '⏳';
+        statusTextEl.textContent = state.devBlockReason || 'Waiting for project scaffold...';
+        filesEl.style.display = 'none';
+      } else if (state.scaffoldReady) {
+        statusEl.className = 'scaffold-status ready';
+        statusEl.querySelector('.scaffold-status-icon').textContent = '✓';
+        statusTextEl.textContent = 'Project scaffold ready';
+        if (state.scaffoldFiles && state.scaffoldFiles.length > 0) {
+          filesEl.textContent = `${state.scaffoldFiles.length} files: ${state.scaffoldFiles.slice(0, 3).join(', ')}${state.scaffoldFiles.length > 3 ? '...' : ''}`;
+          filesEl.style.display = 'block';
+        } else {
+          filesEl.style.display = 'none';
+        }
+      }
+    }
+
     function renderFullState() {
       document.getElementById('requirementText').textContent =
         state.requirement || 'No sprint running';
       updateStatus(state.status);
+      renderScaffoldStatus();
       if (state.devAgents      && state.devAgents.length      > 0) renderDevAgents(state.devAgents);
       if (state.reviewerAgents && state.reviewerAgents.length > 0) renderReviewerAgents(state.reviewerAgents);
       if (state.qaAgents       && state.qaAgents.length       > 0) renderQaAgents(state.qaAgents);
@@ -1958,17 +2234,115 @@
 
         countEl.textContent = cards.length;
 
-        container.innerHTML = cards.map((card) => `
-          <div class="kanban-card ${card.agent || ''}" onclick="openCardDetail('${escapeAttr(card.id)}')" title="Click to view details">
-            <div class="kanban-card-id">${escapeHtml(card.id)}</div>
-            <div class="kanban-card-title">${escapeHtml(card.title || 'Untitled')}</div>
-          </div>
-        `).join('');
+        // Separate stories and tasks for hierarchy rendering
+        const stories = cards.filter(c => c.type === 'story' || c.id.startsWith('us-'));
+        const tasks = cards.filter(c => c.type === 'task' || c.id.startsWith('dev-'));
+
+        // Build a map of story -> child tasks
+        const storyChildMap = {};
+        tasks.forEach(task => {
+          const parentStory = task.parentStory;
+          if (parentStory) {
+            if (!storyChildMap[parentStory]) storyChildMap[parentStory] = [];
+            storyChildMap[parentStory].push(task);
+          }
+        });
+
+        // Render stories first, then their child tasks
+        let html = '';
+
+        // Stories with their TL sub-tasks rendered inline
+        stories.forEach((story) => {
+          // Sub-tasks come from story.subtasks (attached by TL via kanban:subtask events)
+          // or from child task cards in the same column (legacy fallback)
+          const childTasks = storyChildMap[story.id] || [];
+          const subtasks = story.subtasks || childTasks.map(t => ({
+            id: t.id, title: t.title,
+            status: t.assignedDev ? 'in-progress' : 'pending',
+          }));
+
+          // Split sub-tasks into dev vs QA sections
+          const devSubtasks = subtasks.filter(st => !st.type || st.type === 'dev');
+          const qaSubtasksInCard = subtasks.filter(st => st.type === 'qa');
+
+          const renderSubtaskItems = (items) => items.map(st => {
+            const icon = st.status === 'done' ? '✅' : st.status === 'in-progress' ? '🔄' : '📌';
+            return `<div class="kanban-subtask-item ${st.status || 'pending'}">
+              <span class="kanban-subtask-icon">${icon}</span>
+              <span class="kanban-subtask-title" title="${escapeAttr(st.title)}">${escapeHtml(st.title)}</span>
+            </div>`;
+          }).join('');
+
+          let subtasksHtml = '';
+          if (devSubtasks.length > 0 || qaSubtasksInCard.length > 0) {
+            subtasksHtml = `<div class="kanban-subtask-list">`;
+            if (devSubtasks.length > 0) {
+              subtasksHtml += `<span class="kanban-subtask-section-label dev">⚙ Dev (${devSubtasks.length})</span>`;
+              subtasksHtml += renderSubtaskItems(devSubtasks);
+            }
+            if (qaSubtasksInCard.length > 0) {
+              subtasksHtml += `<span class="kanban-subtask-section-label qa">🧪 QA (${qaSubtasksInCard.length})</span>`;
+              subtasksHtml += renderSubtaskItems(qaSubtasksInCard);
+            }
+            subtasksHtml += `</div>`;
+          }
+
+          // Show assigned dev if set
+          const assignedDevHtml = story.assignedDev
+            ? `<div class="kanban-card-assigned-dev">🧑‍💻 ${escapeHtml(story.assignedDev)}</div>`
+            : '';
+
+          // Badge shows both dev task count and QA status
+          const tlBadge = devSubtasks.length > 0
+            ? `<div class="kanban-tl-badge">🔧 ${devSubtasks.length} dev · ${qaSubtasksInCard.length > 0 ? `🧪 ${qaSubtasksInCard.length} QA` : '🧪 QA pending'}</div>`
+            : '';
+
+          html += `
+            <div class="kanban-card story ${story.agent || ''}" onclick="openCardDetail('${escapeAttr(story.id)}')" title="Click to view details">
+              <div class="kanban-card-id">${escapeHtml(story.id.toUpperCase())}</div>
+              <div class="kanban-card-title">${escapeHtml(story.title || 'Untitled')}</div>
+              ${tlBadge}
+              ${assignedDevHtml}
+              ${subtasksHtml}
+            </div>
+          `;
+        });
+
+        // Orphan tasks (no parent story — rendered as plain task cards)
+        const orphanTasks = tasks.filter(t => !t.parentStory || !stories.find(s => s.id === t.parentStory));
+        orphanTasks.forEach((task) => {
+          html += `
+            <div class="kanban-card task ${task.agent || ''}" onclick="openCardDetail('${escapeAttr(task.id)}')" title="Click to view details">
+              <div class="kanban-card-id">${escapeHtml(task.id.toUpperCase())}</div>
+              <div class="kanban-card-title">${escapeHtml(task.title || 'Untitled')}</div>
+              ${task.assignedDev ? `<div class="kanban-card-assigned-dev">🧑‍💻 ${escapeHtml(task.assignedDev)}</div>` : ''}
+            </div>
+          `;
+        });
+
+        // Fallback: if no stories/tasks structure, render normally
+        if (html === '') {
+          html = cards.map((card) => `
+            <div class="kanban-card ${card.agent || ''}" onclick="openCardDetail('${escapeAttr(card.id)}')" title="Click to view details">
+              <div class="kanban-card-id">${escapeHtml(card.id.toUpperCase())}</div>
+              <div class="kanban-card-title">${escapeHtml(card.title || 'Untitled')}</div>
+            </div>
+          `).join('');
+        }
+
+        container.innerHTML = html;
       });
 
-      const done = (state.kanban.done || []).length;
-      const total = Object.values(state.kanban).flat().length;
-      document.getElementById('taskProgress').textContent = `${done}/${total} tasks`;
+      // Count user story cards only (sub-tasks are now inline, not separate kanban items)
+      const allCards = Object.values(state.kanban).flat();
+      const storyCards = allCards.filter(c => c.type === 'story' || (c.id || '').startsWith('us-'));
+      const doneStories = (state.kanban.done || []).filter(c => c.type === 'story' || (c.id || '').startsWith('us-')).length;
+      const blockedStories = (state.kanban.blocked || []).filter(c => c.type === 'story' || (c.id || '').startsWith('us-')).length;
+      const totalStories = storyCards.length;
+      const completedLabel = blockedStories > 0
+        ? `${doneStories}/${totalStories} stories (${blockedStories} blocked)`
+        : `${doneStories}/${totalStories} stories`;
+      document.getElementById('taskProgress').textContent = completedLabel;
     }
 
     function renderActivityLog() {

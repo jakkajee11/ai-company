@@ -41,6 +41,11 @@ let sprintState = {
   logs: [],
   connectedClients: 0,
   skipRequested: null,  // { agent: 'po' | 'tl' | 'dev-xxx' | ... }
+  // Scaffold state
+  scaffoldReady: false,
+  scaffoldFiles: [],
+  devBlocked: true,
+  devBlockReason: 'Waiting for Tech Lead to create project structure',
 };
 
 let wss = null;
@@ -160,6 +165,11 @@ export function resetState(requirement, mode) {
     kanban: { backlog: [], inProgress: [], review: [], blocked: [], done: [] },
     logs: [],
     connectedClients: sprintState.connectedClients,
+    // Scaffold state
+    scaffoldReady: false,
+    scaffoldFiles: [],
+    devBlocked: true,
+    devBlockReason: 'Waiting for Tech Lead to create project structure',
   };
   broadcast({ type: 'state:full', state: sprintState });
 }
@@ -295,20 +305,25 @@ export function createWebProgressHandler() {
         break;
 
       case 'kanban': {
-        // Update kanban state
+        // Update kanban state — preserve ALL existing card fields (subtasks, type, etc.)
         const { id, column, title, agent } = event;
 
-        // Remove from all columns first
+        // Find existing card data before removing
+        let existingCard = null;
+        Object.keys(sprintState.kanban).forEach((col) => {
+          const found = sprintState.kanban[col].find((c) => c.id === id);
+          if (found) existingCard = found;
+        });
+
+        // Remove from all columns
         Object.keys(sprintState.kanban).forEach((col) => {
           sprintState.kanban[col] = sprintState.kanban[col].filter((c) => c.id !== id);
         });
 
-        // Add to new column
+        // Re-insert preserving all existing fields
         if (column && sprintState.kanban[column]) {
-          const existingCard = Object.values(sprintState.kanban)
-            .flat()
-            .find((c) => c.id === id);
           sprintState.kanban[column].push({
+            ...(existingCard || {}),   // preserve subtasks, type, assignedDev, etc.
             id,
             title: title || existingCard?.title || '',
             agent: agent || existingCard?.agent || '',
@@ -321,6 +336,73 @@ export function createWebProgressHandler() {
           column,
           title,
           kanban: sprintState.kanban,
+        });
+        break;
+      }
+
+      case 'kanban:subtask': {
+        // Attach a TL sub-task to a user story card
+        const { storyId, subtask } = event;
+        const storyCard = Object.values(sprintState.kanban).flat().find(c => c.id === storyId);
+        if (storyCard) {
+          if (!storyCard.subtasks) storyCard.subtasks = [];
+          // Avoid duplicates
+          if (!storyCard.subtasks.find(s => s.id === subtask.id)) {
+            storyCard.subtasks.push(subtask);
+          }
+        }
+        broadcast({ type: 'kanban:subtask', storyId, subtask, kanban: sprintState.kanban });
+        break;
+      }
+
+      case 'kanban:dev-assigned': {
+        // Record which dev is assigned to a user story (and which sub-task they're working on)
+        const { storyId: assignStoryId, devName, taskId } = event;
+        const storyCard = Object.values(sprintState.kanban).flat().find(c => c.id === assignStoryId);
+        if (storyCard) {
+          storyCard.assignedDev = devName;
+          // Update sub-task status to in-progress
+          const sub = storyCard.subtasks?.find(s => s.id === taskId);
+          if (sub) sub.status = 'in-progress';
+        }
+        broadcast({ type: 'kanban:dev-assigned', storyId: assignStoryId, devName, taskId, kanban: sprintState.kanban });
+        break;
+      }
+
+      case 'scaffold:created': {
+        sprintState.scaffoldReady = event.created;
+        sprintState.scaffoldFiles = event.files || [];
+        sprintState.devBlocked = !event.created;
+        sprintState.devBlockReason = event.created ? null : 'Scaffold creation failed';
+        broadcast({
+          type: 'scaffold:created',
+          files: event.files,
+          created: event.created,
+          state: sprintState,
+        });
+        break;
+      }
+
+      case 'dev:waiting': {
+        sprintState.devBlocked = true;
+        sprintState.devBlockReason = event.reason || 'Waiting for project scaffold';
+        broadcast({
+          type: 'dev:waiting',
+          reason: event.reason,
+          state: sprintState,
+        });
+        break;
+      }
+
+      case 'dev:unblocked': {
+        sprintState.devBlocked = false;
+        sprintState.devBlockReason = null;
+        sprintState.scaffoldReady = true;
+        sprintState.scaffoldFiles = event.scaffoldFiles || [];
+        broadcast({
+          type: 'dev:unblocked',
+          scaffoldFiles: event.scaffoldFiles,
+          state: sprintState,
         });
         break;
       }

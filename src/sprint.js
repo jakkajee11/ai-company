@@ -7,7 +7,7 @@
 
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
-import { callAgent, runDevAgent, runDevAgentForTask, runDevFixForTask, parseQaVerdict, parseReviewerVerdict, AGENTS, STAR_WARS_PERSONAS } from './agents.js';
+import { callAgent, runDevAgent, runDevAgentForTask, runDevFixForTask, parseQaVerdict, parseReviewerVerdict, parseAndCreateScaffold, designQaSubtasks, AGENTS, STAR_WARS_PERSONAS } from './agents.js';
 import { isSkipRequested, clearSkipRequest } from './web-server.js';
 
 // จำนวน dev สูงสุดที่รันพร้อมกันได้ — ตั้งผ่าน MAX_DEVS env var, default = ตามจำนวน tasks
@@ -51,6 +51,8 @@ export async function runSprint(requirement, opts = {}) {
     reviewCycles: [],     // บันทึกรอบที่ Reviewer ส่งงานกลับ: [{ reviewerKey, devKey, round, issues }]
     fixCycles: [],        // บันทึกรอบที่ QA ส่งงานกลับ: [{ qaKey, devKey, round, issues }]
     needsHumanReview: [], // งานที่ต้องการ human review: [{ task, qaKey, qaRound, file, issues }]
+    scaffoldFiles: [],    // ไฟล์ที่สร้างจาก TL scaffold
+    scaffoldReady: false, // สถานะ scaffold creation
   };
 
   // Notify progress bar to initialize
@@ -76,14 +78,26 @@ export async function runSprint(requirement, opts = {}) {
   };
 
   const moveCard = (ids, toCol) => {
-    ids.forEach(id => {
+    // Deduplicate IDs — no point moving same card twice
+    const uniqueIds = [...new Set(ids.filter(Boolean))];
+    uniqueIds.forEach(id => {
+      // Preserve existing card data (title, subtasks, type, assignedDev, etc.)
+      let existingCard = null;
+      Object.keys(sprint.kanban).forEach(col => {
+        const found = sprint.kanban[col].find(c => c.id === id);
+        if (found) existingCard = found;
+      });
+      // Remove from all columns
       Object.keys(sprint.kanban).forEach(col => {
         sprint.kanban[col] = sprint.kanban[col].filter(c => c.id !== id);
       });
-      sprint.kanban[toCol].push({ id });
+      // Re-insert with all fields preserved
+      const cardData = existingCard ? { ...existingCard } : { id };
+      sprint.kanban[toCol].push(cardData);
       onProgress({ type: 'kanban', id, column: toCol });
     });
   };
+
 
   const addCards = (cards, col) => {
     cards.forEach(c => {
@@ -116,6 +130,14 @@ export async function runSprint(requirement, opts = {}) {
   addCards(userStories, 'backlog');
   sprintLog('po', `User stories created: ${userStories.length} stories added to backlog`);
 
+  // Helper: resolve kanban card ID for a dev task — use parent user story if linked
+  const getStoryId = (task) => {
+    if (task.parentStory) return task.parentStory;
+    // Derive from task index: dev-0 → us-0, dev-1 → us-1, etc.
+    const idx = parseInt((task.id || '').split('-')[1]) || 0;
+    return userStories[idx % Math.max(1, userStories.length)]?.id || task.id;
+  };
+
   // ── Phase 2: Tech Lead ──────────────────────────────────────────────────────
   onProgress({ type: 'phase', agent: 'tl', phase: 'Architecture & Task Breakdown' });
   sprintLog('tl', 'Designing architecture and breaking down dev tasks',
@@ -137,46 +159,141 @@ export async function runSprint(requirement, opts = {}) {
   sprintLog('tl', 'Architecture defined. ADR logged.',
     'See ADR section in output for decision rationale');
 
-  // ── กำหนดทีม Developer จาก TL output ─────────────────────────────────────
-  const devTasks = parseDevTasks(tlOutput);
-  addCards(devTasks, 'backlog');
-  const devTaskIds = devTasks.map(t => t.id);
+  // ── Create project scaffold from TL output ─────────────────────────────────────
+  const scaffoldResult = parseAndCreateScaffold(tlOutput, projectDir, {
+    mode,
+    sprintLog: (agent, msg) => sprintLog('tl', msg),
+  });
+  sprint.scaffoldFiles = scaffoldResult.files;
+  sprint.scaffoldReady = scaffoldResult.created;
 
-  // จำนวน dev agents ที่จะ spawn — ไม่เกิน MAX_DEVS และไม่เกินจำนวน tasks จริง
-  const numDevs = Math.max(1, Math.min(devTasks.length, MAX_PARALLEL_DEVS));
+  // Broadcast scaffold creation event
+  onProgress({
+    type: 'scaffold:created',
+    files: scaffoldResult.files,
+    created: scaffoldResult.created,
+  });
+
+  // ── กำหนดทีม Developer จาก TL output ─────────────────────────────────────
+  // TL creates tasks as sub-tasks of user stories — they are NOT separate kanban cards.
+  // Instead they attach to their parent user story card for display.
+  const devTasks = parseDevTasks(tlOutput, userStories);
+
+  // Attach each dev sub-task to its parent user story card
+  devTasks.forEach(task => {
+    const storyId = getStoryId(task);
+    // Update the user story card in sprint.kanban with the new sub-task
+    const storyCard = Object.values(sprint.kanban).flat().find(c => c.id === storyId);
+    if (storyCard) {
+      if (!storyCard.subtasks) storyCard.subtasks = [];
+      storyCard.subtasks.push({ id: task.id, title: task.title, status: 'pending', type: 'dev' });
+    }
+    onProgress({
+      type: 'kanban:subtask',
+      storyId,
+      subtask: { id: task.id, title: task.title, status: 'pending', type: 'dev' },
+    });
+  });
+  sprintLog('tl', `Sub-tasks attached to user stories: ${devTasks.length} task(s) distributed`);
+
+  // ── กฎ: 1 User Story = 1 Dev เท่านั้น ─────────────────────────────────────
+  // Group sub-tasks by parent user story so each dev owns a complete story
+  const subtasksByStory = {};
+  devTasks.forEach(task => {
+    const sid = getStoryId(task);
+    if (!subtasksByStory[sid]) subtasksByStory[sid] = [];
+    subtasksByStory[sid].push(task);
+  });
+
+  // Each dev is assigned exactly 1 user story — they implement ALL sub-tasks for it
+  const numDevs = Math.max(1, Math.min(userStories.length, MAX_PARALLEL_DEVS));
   const devPersonas = STAR_WARS_PERSONAS.dev;
-  const devAgents = devTasks.slice(0, numDevs).map((task, i) => {
+  const devAgents = userStories.slice(0, numDevs).map((story, i) => {
     const persona = devPersonas[i % devPersonas.length];
+    const devKey = `dev-${i}`;
+    const storySubtasks = subtasksByStory[story.id] || [];
+
+    // Compose a "story task" — the dev owns this user story + all its TL sub-tasks
+    const storyTask = {
+      id: story.id,             // kanban card ID = user story ID
+      title: story.title,
+      type: 'story',
+      parentStory: story.id,    // getStoryId() returns story.id directly
+      subtasks: storySubtasks,  // ALL TL sub-tasks for this story
+      // Collect file targets from every sub-task so Claude Code knows what to create
+      files: storySubtasks.map(t => t.files).filter(Boolean).join('\n'),
+    };
+
     return {
-      key: `dev-${i}`,
+      key: devKey,
       name: persona.character,
       persona,
-      task,
+      task: storyTask,
     };
   });
+
   // Register dev names in the name map
   devAgents.forEach(a => { agentNames[a.key] = a.name; });
 
   // แจ้งทุก layer ให้รู้ว่า team มีกี่คน ก่อนเริ่ม DEV phase
   onProgress({ type: 'team:setup', devAgents });
   sprintLog('tl',
-    `Team assembled: ${numDevs} developer${numDevs > 1 ? 's' : ''} running in parallel`,
-    devAgents.map(a => a.name).join(', ')
+    `Team assembled: ${numDevs} developer${numDevs > 1 ? 's' : ''} — 1 dev per user story`,
+    devAgents.map((a, i) => `${a.name} → ${userStories[i]?.id?.toUpperCase() || ''}`).join(', ')
   );
 
+  // ── Dev Blocking Check: Wait for scaffold in execute mode ───────────────────
+  if (mode === 'execute' && !sprint.scaffoldReady) {
+    onProgress({ type: 'dev:waiting', reason: 'Waiting for project scaffold from Tech Lead' });
+    sprintLog('tl', '⚠ Devs blocked: No scaffold available from TL');
+
+    // Create default scaffold as fallback
+    sprintLog('tl', 'Creating default scaffold structure as fallback');
+    const defaultDirs = ['src', 'src/config', 'src/utils'];
+    const defaultFiles = ['src/index.js', 'package.json', 'README.md'];
+
+    for (const dir of defaultDirs) {
+      const fullPath = join(projectDir, dir);
+      if (!existsSync(fullPath)) mkdirSync(fullPath, { recursive: true });
+    }
+
+    // Create basic package.json
+    const packageJsonPath = join(projectDir, 'package.json');
+    if (!existsSync(packageJsonPath)) {
+      writeFileSync(packageJsonPath, JSON.stringify({
+        name: 'ai-sprint-project',
+        version: '1.0.0',
+        description: 'Generated by AI Software Company Sprint',
+        main: 'src/index.js',
+        scripts: { start: 'node src/index.js', test: 'jest' },
+      }, null, 2));
+    }
+
+    sprint.scaffoldFiles = defaultFiles;
+    sprint.scaffoldReady = true;
+    onProgress({ type: 'dev:unblocked', scaffoldFiles: sprint.scaffoldFiles });
+    sprintLog('tl', '✓ Default scaffold created — devs unblocked');
+  }
+
   // ── Phase 3: Developer(s) — parallel ─────────────────────────────────────
-  moveCard(devTaskIds.slice(0, numDevs), 'inProgress');
+  // Move user story cards (not dev task cards) to inProgress
+  const storyIdsForDevPhase = [...new Set(devAgents.map(a => getStoryId(a.task)))];
+  moveCard(storyIdsForDevPhase, 'inProgress');
 
   const devResults = await Promise.all(
     devAgents.map(async ({ key, name, persona, task }) => {
+      // Announce dev assignment on the user story kanban card
+      const storyId = getStoryId(task);
+      onProgress({ type: 'kanban:dev-assigned', storyId, devName: name, taskId: task.id });
+
       onProgress({
         type: 'phase',
         agent: key,
         phase: mode === 'execute' ? `Implementing: ${task.title.slice(0, 30)}` : 'Planning implementation',
       });
       sprintLog(key,
-        mode === 'execute' ? `Starting: ${task.title}` : `Planning: ${task.title}`,
-        mode === 'execute' ? 'Running Claude Code subprocess' : 'Simulation mode'
+        mode === 'execute' ? `Picked up ${storyId.toUpperCase()} → sub-task: ${task.title}` : `Planning: ${task.title}`,
+        mode === 'execute' ? 'Building on Tech Lead scaffold — not creating own project' : 'Simulation mode'
       );
 
       // แต่ละ dev ได้ directory ของตัวเอง (ถ้ามีหลาย dev)
@@ -196,7 +313,9 @@ export async function runSprint(requirement, opts = {}) {
   );
 
   sprint.outputs.dev = devResults.reduce((acc, { key, output }) => ({ ...acc, [key]: output }), {});
-  moveCard(devTaskIds, 'review');
+  // Move user story cards to review (not separate dev task cards)
+  const allDevStoryIds = [...new Set(devResults.map(r => getStoryId(r.task)))];
+  moveCard(allDevStoryIds, 'review');
 
   // ── Phase 4: Code Review — 1 reviewer per dev, parallel ──────────────────────
   const reviewerPersonas = STAR_WARS_PERSONAS.reviewer;
@@ -288,7 +407,7 @@ export async function runSprint(requirement, opts = {}) {
           verdict.issues.map((issue, i) => `${i + 1}. ${issue}`).join(' | ')
         );
 
-        moveCard([devResult.task.id], 'inProgress');
+        moveCard([getStoryId(devResult.task)], 'inProgress');
         onProgress({
           type: 'phase',
           agent: devKey,
@@ -315,7 +434,7 @@ export async function runSprint(requirement, opts = {}) {
         );
 
         sprint.outputs.dev[devKey] = currentDevOutput;
-        moveCard([devResult.task.id], 'review');
+        moveCard([getStoryId(devResult.task)], 'review');
       } // end while
 
       return {
@@ -361,8 +480,42 @@ export async function runSprint(requirement, opts = {}) {
     qaAgents.map(a => a.name).join(', ')
   );
 
+  // ── QA agents design their own sub-tasks per user story (before QA review loop) ──
+  // Each QA agent designs QA-specific sub-tasks for their assigned user story.
+  // These are added to the kanban card's subtasks list with type: 'qa'.
+  const qaAgentsWithSubtasks = await Promise.all(qaAgents.map(async (agent) => {
+    const { key: qaKey, persona: qaPersona, devResult } = agent;
+    const storyId = getStoryId(devResult.task);
+    const story = userStories.find(s => s.id === storyId);
+    const devSubtasksForStory = (subtasksByStory[storyId] || []);
+
+    sprintLog(qaKey,
+      `Designing QA sub-tasks for ${storyId?.toUpperCase() || devResult.task.title}`,
+      'Creating test scenarios based on dev sub-tasks'
+    );
+
+    const qaSubtasks = await designQaSubtasks(story, devSubtasksForStory, requirement, qaPersona?.identity);
+
+    // Attach QA sub-tasks to the user story kanban card
+    const storyCard = Object.values(sprint.kanban).flat().find(c => c.id === storyId);
+    if (storyCard) {
+      if (!storyCard.subtasks) storyCard.subtasks = [];
+      qaSubtasks.forEach(qt => storyCard.subtasks.push(qt));
+    }
+    qaSubtasks.forEach(qt => {
+      onProgress({ type: 'kanban:subtask', storyId, subtask: qt });
+    });
+
+    sprintLog(qaKey,
+      `QA sub-tasks ready: ${qaSubtasks.length} test scenario(s) for ${storyId?.toUpperCase() || ''}`,
+      qaSubtasks.map(t => t.title).join(' | ')
+    );
+
+    return { ...agent, qaSubtasks };
+  }));
+
   // Kanban cards สำหรับ QA — 1 test card + 1 security card ต่อ dev
-  const qaCards = qaAgents.flatMap(({ key, devResult }) => [
+  const qaCards = qaAgentsWithSubtasks.flatMap(({ key, devResult }) => [
     { id: `${key}-test`, title: `Tests: ${devResult.task.title.slice(0, 28)}`, agent: 'qa' },
     { id: `${key}-sec`,  title: `Security: ${devResult.task.title.slice(0, 24)}`, agent: 'qa' },
   ]);
@@ -370,7 +523,7 @@ export async function runSprint(requirement, opts = {}) {
 
   // ── QA ↔ Dev feedback loop — each QA agent runs in parallel ─────────────────
   const qaResults = await Promise.all(
-    qaAgents.map(async ({ key: qaKey, persona: qaPersona, devResult }) => {
+    qaAgentsWithSubtasks.map(async ({ key: qaKey, persona: qaPersona, devResult, qaSubtasks }) => {
       const devKey = devResult.key;
       // Dev and reviewer personas for fix/re-review calls within this QA loop
       const devPersonaForQa       = devAgents.find(a => a.key === devKey)?.persona;
@@ -402,9 +555,12 @@ export async function runSprint(requirement, opts = {}) {
           'Checking: correctness, error handling, security, code quality'
         );
 
+        const qaSubtaskBlock = qaSubtasks && qaSubtasks.length > 0
+          ? `\n\nYour QA Sub-tasks (test against ALL of these):\n${qaSubtasks.map((t, i) => `${i + 1}. ${t.title}`).join('\n')}`
+          : '';
         const qaContext = mode === 'simulate'
-          ? `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nNote: Simulation mode — write tests based on the architecture plan.`
-          : `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}\n\nImplementation:\n${currentDevOutput}`;
+          ? `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}${qaSubtaskBlock}\n\nNote: Simulation mode — write tests based on the architecture plan.`
+          : `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}${qaSubtaskBlock}\n\nImplementation:\n${currentDevOutput}`;
 
         qaOutput = await callAgent('qa', qaContext, { persona: qaPersona?.identity });
         verdict = parseQaVerdict(qaOutput);
@@ -434,6 +590,7 @@ export async function runSprint(requirement, opts = {}) {
           // Save to needsHumanReview for separate file
           sprint.needsHumanReview.push({
             taskId: devResult.task.id,
+            storyId: getStoryId(devResult.task),   // for kanban card tracking
             taskTitle: devResult.task.title,
             devKey,
             qaKey,
@@ -443,8 +600,8 @@ export async function runSprint(requirement, opts = {}) {
             taskDir: devResult.taskDir,
           });
 
-          // Move to blocked column instead of done
-          moveCard([devResult.task.id], 'blocked');
+          // Move user story card to blocked column instead of done
+          moveCard([getStoryId(devResult.task)], 'blocked');
           break;
         }
 
@@ -459,8 +616,8 @@ export async function runSprint(requirement, opts = {}) {
           verdict.issues.map((issue, i) => `${i + 1}. ${issue}`).join(' | ')
         );
 
-        // Move dev task card back to inProgress visually
-        moveCard([devResult.task.id], 'inProgress');
+        // Move user story card back to inProgress visually
+        moveCard([getStoryId(devResult.task)], 'inProgress');
 
         onProgress({
           type: 'phase',
@@ -488,7 +645,7 @@ export async function runSprint(requirement, opts = {}) {
         );
 
         sprint.outputs.dev[devKey] = currentDevOutput;
-        moveCard([devResult.task.id], 'review');
+        moveCard([getStoryId(devResult.task)], 'review');
 
         // ── Reviewer must re-review every Dev fix before code returns to QA ──
         const reviewerKey = `reviewer-${devKey.split('-')[1]}`;
@@ -514,7 +671,7 @@ export async function runSprint(requirement, opts = {}) {
 
           const reReviewContext = mode === 'simulate'
             ? `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}\n\nNote: Simulation mode — re-review after QA fix round ${qaRound}.`
-            : `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}\n\nImplementation (after QA fix round ${qaRound}):\n${currentDevOutput}`;
+            : `Feature: ${requirement}\n\nArchitecture:\n${tlOutput}\n\nTask: ${devResult.task.title}${qaSubtaskBlock}\n\nImplementation (after QA fix round ${qaRound}):\n${currentDevOutput}`;
 
           const reReviewOutput = await callAgent('reviewer', reReviewContext, { persona: reviewerPersonaForQa?.identity });
           const reVerdict = parseReviewerVerdict(reReviewOutput);
@@ -553,7 +710,7 @@ export async function runSprint(requirement, opts = {}) {
             reVerdict.issues.map((issue, i) => `${i + 1}. ${issue}`).join(' | ')
           );
 
-          moveCard([devResult.task.id], 'inProgress');
+          moveCard([getStoryId(devResult.task)], 'inProgress');
           onProgress({
             type: 'phase',
             agent: devKey,
@@ -579,7 +736,7 @@ export async function runSprint(requirement, opts = {}) {
             `Fixed ${reVerdict.issues.length} reviewer issue(s)`
           );
           sprint.outputs.dev[devKey] = currentDevOutput;
-          moveCard([devResult.task.id], 'review');
+          moveCard([getStoryId(devResult.task)], 'review');
         } // end reviewer re-review loop
 
       } // end QA while
@@ -605,9 +762,11 @@ export async function runSprint(requirement, opts = {}) {
     (acc, { key, qaRound, passed }) => ({ ...acc, [key]: { rounds: qaRound, passed } }), {}
   );
 
-  const allTaskIds = [...userStories.map(s => s.id), ...devTaskIds];
-  moveCard(allTaskIds, 'done');
-  moveCard(qaCards.map(c => c.id), 'done');
+  // Move completed user story cards to done (blocked ones stay in blocked column)
+  const blockedStoryIds = new Set(sprint.needsHumanReview.map(n => n.storyId));
+  const doneStoryIds = userStories.map(s => s.id).filter(id => !blockedStoryIds.has(id));
+  moveCard(doneStoryIds, 'done');
+  moveCard(qaCards.map(c => c.id).filter(id => !blockedStoryIds.has(id)), 'done');
 
   // ── Finalize ────────────────────────────────────────────────────────────────
   sprint.completedAt = new Date().toISOString();
@@ -879,46 +1038,108 @@ function parseUserStories(poOutput) {
     const match = line.match(/as a\s+(.+?),?\s+i want\s+(.+?)(?:\s+so that|$)/i);
     if (match) {
       const title = `As a ${match[1].trim()}: ${match[2].trim()}`.slice(0, 60);
-      stories.push({ id: `us-${stories.length}`, title, agent: 'po' });
+      stories.push({
+        id: `us-${stories.length}`,
+        title,
+        agent: 'po',
+        type: 'story',
+        childTasks: [],  // Will be populated after TL phase
+      });
     }
     if (stories.length >= 5) break;
   }
   // Fallback if PO didn't follow the format
   if (stories.length === 0) {
     return [
-      { id: 'us-0', title: 'Core feature story', agent: 'po' },
-      { id: 'us-1', title: 'Auth / access story', agent: 'po' },
-      { id: 'us-2', title: 'Error handling story', agent: 'po' },
+      { id: 'us-0', title: 'Core feature story', agent: 'po', type: 'story', childTasks: [] },
+      { id: 'us-1', title: 'Auth / access story', agent: 'po', type: 'story', childTasks: [] },
+      { id: 'us-2', title: 'Error handling story', agent: 'po', type: 'story', childTasks: [] },
     ];
   }
   return stories;
 }
 
 /**
+ * Parse story reference from task description.
+ * Looks for patterns like "implements US-0", "for US-0", "US-X"
+ */
+function parseStoryReference(taskText, userStories) {
+  // Look for explicit story references
+  const patterns = [
+    /(?:implements?|for|from)\s*(?:us-?|user\s*story\s*)?(\d+)/i,
+    /(?:us-?|user\s*story\s*)(\d+)/i,
+  ];
+
+  for (const pattern of patterns) {
+    const match = taskText.match(pattern);
+    if (match) {
+      const storyIndex = parseInt(match[1], 10);
+      const storyId = `us-${storyIndex}`;
+      // Verify story exists
+      if (userStories.some(s => s.id === storyId)) {
+        return storyId;
+      }
+    }
+  }
+
+  // Default: assign to first story if only one exists
+  if (userStories.length === 1) {
+    return userStories[0].id;
+  }
+
+  return null;
+}
+
+/**
  * Parse dev tasks from TL output.
  * Looks for numbered task names; falls back to generic cards.
+ * Now accepts userStories to establish parent-child relationships.
  */
-function parseDevTasks(tlOutput) {
+function parseDevTasks(tlOutput, userStories = []) {
   const lines = tlOutput.split('\n');
   const tasks = [];
+
   for (const line of lines) {
     // Match lines like "Task 1: ...", "1. Create authService", "- Task name: ..."
     const match = line.match(/(?:task\s*\d*[:.]?\s*|^\s*\d+[.)]\s+|^\s*[-*]\s+task\s+name:\s*)(.{5,60})/i);
     if (match) {
       const title = match[1].trim().replace(/^name:\s*/i, '').slice(0, 60);
       if (title.length > 4) {
-        tasks.push({ id: `dev-${tasks.length}`, title, agent: 'tl' });
+        // Determine parent story from task description
+        const parentStory = parseStoryReference(title + ' ' + line, userStories);
+
+        tasks.push({
+          id: `dev-${tasks.length}`,
+          title,
+          agent: 'tl',
+          type: 'task',
+          parentStory,
+          assignedDev: null,  // Will be set when dev agents are assigned
+        });
       }
     }
     if (tasks.length >= 5) break;
   }
+
+  // Fallback if no tasks found
   if (tasks.length === 0) {
-    return [
-      { id: 'dev-0', title: 'Core service', agent: 'tl' },
-      { id: 'dev-1', title: 'Data layer', agent: 'tl' },
-      { id: 'dev-2', title: 'API / interface layer', agent: 'tl' },
-    ];
+    tasks.push(
+      { id: 'dev-0', title: 'Core service', agent: 'tl', type: 'task', parentStory: userStories[0]?.id || null, assignedDev: null },
+      { id: 'dev-1', title: 'Data layer', agent: 'tl', type: 'task', parentStory: userStories[0]?.id || null, assignedDev: null },
+      { id: 'dev-2', title: 'API / interface layer', agent: 'tl', type: 'task', parentStory: userStories[0]?.id || null, assignedDev: null },
+    );
   }
+
+  // Update parent stories' childTasks arrays
+  tasks.forEach(task => {
+    if (task.parentStory) {
+      const parentStory = userStories.find(s => s.id === task.parentStory);
+      if (parentStory) {
+        parentStory.childTasks.push(task.id);
+      }
+    }
+  });
+
   return tasks;
 }
 
