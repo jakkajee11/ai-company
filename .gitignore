@@ -1,3 +1,10 @@
+# AI Company Sprint Output
+output/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
 # Logs
 logs
 *.log
