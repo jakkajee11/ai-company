@@ -40,10 +40,26 @@ let sprintState = {
   kanban: { backlog: [], inProgress: [], review: [], blocked: [], done: [] },
   logs: [],
   connectedClients: 0,
+  skipRequested: null,  // { agent: 'po' | 'tl' | 'dev-xxx' | ... }
 };
 
 let wss = null;
 let httpServer = null;
+
+// ─── Skip Agent Control ───────────────────────────────────────────────────────
+
+export function isSkipRequested(agentKey) {
+  return sprintState.skipRequested?.agent === agentKey;
+}
+
+export function clearSkipRequest() {
+  sprintState.skipRequested = null;
+}
+
+export function requestSkip(agentKey) {
+  sprintState.skipRequested = { agent: agentKey, timestamp: Date.now() };
+  broadcast({ type: 'skip:requested', agent: agentKey });
+}
 
 // ─── WebSocket Server ────────────────────────────────────────────────────────
 
@@ -59,6 +75,18 @@ export function startWebServer(port = 3456) {
 
       // Send current state to new client
       ws.send(JSON.stringify({ type: 'state:full', state: sprintState }));
+
+      // Handle incoming messages from client
+      ws.on('message', (data) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === 'skip:agent' && msg.agent) {
+            requestSkip(msg.agent);
+          }
+        } catch (e) {
+          // Ignore invalid messages
+        }
+      });
 
       ws.on('close', () => {
         sprintState.connectedClients = wss.clients.size;

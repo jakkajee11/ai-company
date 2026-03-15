@@ -413,6 +413,7 @@
 
     .kanban-card:hover {
       background: var(--bg-card-hover);
+      cursor: pointer;
     }
 
     .kanban-card.po { border-left-color: var(--po-color); }
@@ -733,6 +734,24 @@
       font-size: 0.875rem;
       color: var(--text-secondary);
       font-family: monospace;
+    }
+
+    .skip-btn {
+      margin-left: auto;
+      padding: 0.4rem 0.8rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      background: var(--error);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .skip-btn:hover {
+      background: #ff5252;
+      transform: scale(1.05);
     }
 
     /* Task Box */
@@ -1217,6 +1236,7 @@
             <span id="detailStatusText">Pending</span>
           </div>
           <div class="detail-elapsed" id="detailElapsed">-</div>
+          <button class="skip-btn" id="skipBtn" onclick="skipCurrentAgent()" style="display:none">⏭️ Skip</button>
         </div>
       </div>
 
@@ -1259,6 +1279,55 @@
         </div>
       </div>
 
+    </div>
+  </div>
+
+  <!-- ── Card Detail Panel ── -->
+  <div class="detail-overlay" id="cardDetailOverlay" onclick="closeCardDetail()"></div>
+
+  <div class="detail-panel" id="cardDetailPanel">
+    <!-- Header -->
+    <div class="detail-header">
+      <div class="detail-agent-info">
+        <div class="detail-icon-wrap" id="cardDetailIconWrap">
+          <span id="cardDetailIcon">📌</span>
+        </div>
+        <div>
+          <div class="detail-agent-name" id="cardDetailId">CARD-0</div>
+          <div class="detail-agent-role" id="cardDetailStatus">Backlog</div>
+        </div>
+      </div>
+      <button class="detail-close" onclick="closeCardDetail()">✕</button>
+    </div>
+
+    <!-- Scrollable Body -->
+    <div class="detail-body">
+      <!-- Title -->
+      <div>
+        <div class="detail-section-label">Title</div>
+        <div class="detail-task-box">
+          <div class="detail-task-title" id="cardDetailTitle">-</div>
+        </div>
+      </div>
+
+      <!-- Created By -->
+      <div>
+        <div class="detail-section-label">Created By</div>
+        <div class="detail-task-box">
+          <div class="detail-task-title" id="cardDetailAgent">-</div>
+        </div>
+      </div>
+
+      <!-- Related Activity -->
+      <div>
+        <div class="detail-section-label">
+          Related Activity
+          <span class="detail-count-badge" id="cardTimelineCount">0</span>
+        </div>
+        <div class="detail-timeline" id="cardTimeline">
+          <div class="timeline-empty">No activity yet</div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -1414,6 +1483,106 @@
       document.getElementById('agentDetailPanel').classList.remove('open');
     }
 
+    // ── Card Detail Panel ─────────────────────────────────────────────────────
+
+    let openCardId = null;
+
+    function openCardDetail(cardId) {
+      openCardId = cardId;
+      document.getElementById('cardDetailOverlay').classList.add('open');
+      document.getElementById('cardDetailPanel').classList.add('open');
+      updateCardDetailPanel();
+    }
+
+    function closeCardDetail() {
+      openCardId = null;
+      document.getElementById('cardDetailOverlay').classList.remove('open');
+      document.getElementById('cardDetailPanel').classList.remove('open');
+    }
+
+    function findCardById(cardId) {
+      const columns = ['backlog', 'inProgress', 'review', 'blocked', 'done'];
+      for (const col of columns) {
+        const card = (state.kanban[col] || []).find(c => c.id === cardId);
+        if (card) return { ...card, column: col };
+      }
+      return null;
+    }
+
+    function updateCardDetailPanel() {
+      if (!openCardId) return;
+
+      const card = findCardById(openCardId);
+      if (!card) {
+        document.getElementById('cardDetailId').textContent = openCardId;
+        document.getElementById('cardDetailTitle').textContent = 'Card not found';
+        return;
+      }
+
+      // Determine color class based on agent
+      const colorClass = card.agent?.startsWith('dev-')      ? 'dev'
+                       : card.agent?.startsWith('reviewer-') ? 'reviewer'
+                       : card.agent?.startsWith('qa-')       ? 'qa'
+                       : card.agent || 'po';
+
+      // Column display names
+      const columnNames = {
+        backlog: '📋 Backlog',
+        inProgress: '🔄 In Progress',
+        review: '🔍 Review',
+        blocked: '🚫 Blocked',
+        done: '✅ Done'
+      };
+
+      // Header
+      document.getElementById('cardDetailIcon').textContent = '📌';
+      document.getElementById('cardDetailId').textContent = card.id.toUpperCase();
+      document.getElementById('cardDetailStatus').textContent = columnNames[card.column] || card.column;
+      document.getElementById('cardDetailIconWrap').className = `detail-icon-wrap ${colorClass}`;
+
+      // Content
+      document.getElementById('cardDetailTitle').textContent = card.title || 'Untitled';
+      document.getElementById('cardDetailAgent').textContent = card.agent ? card.agent.toUpperCase() : '-';
+
+      // Related activity logs
+      const relatedLogs = (state.logs || []).filter(log => {
+        const msg = (log.message || '').toLowerCase();
+        return msg.includes(card.id.toLowerCase()) || msg.includes((card.title || '').toLowerCase().slice(0, 20));
+      });
+
+      document.getElementById('cardTimelineCount').textContent = relatedLogs.length;
+      const timelineEl = document.getElementById('cardTimeline');
+
+      if (relatedLogs.length === 0) {
+        timelineEl.innerHTML = '<div class="timeline-empty">No related activity</div>';
+      } else {
+        timelineEl.innerHTML = relatedLogs.map((log, i) => {
+          const time = log.timestamp ? log.timestamp.slice(11, 19) : '';
+          const raw = (log.agent || '').toLowerCase();
+          const agentColorClass = raw.startsWith('dev-')      ? 'dev'
+                                : raw.startsWith('reviewer-') ? 'reviewer'
+                                : raw.startsWith('qa-')       ? 'qa'
+                                : raw;
+          return `
+            <div class="timeline-entry">
+              <div class="timeline-left">
+                <div class="timeline-dot ${agentColorClass}"></div>
+                <div class="timeline-line"></div>
+              </div>
+              <div class="timeline-content">
+                <div class="timeline-meta">
+                  <span class="timeline-time">${escapeHtml(time)}</span>
+                  <span class="timeline-seq">#${i + 1}</span>
+                </div>
+                <div class="timeline-message">${escapeHtml(log.message || '')}</div>
+                ${log.decision ? `<div class="timeline-decision">→ ${escapeHtml(log.decision)}</div>` : ''}
+              </div>
+            </div>
+          `;
+        }).join('');
+      }
+    }
+
     function getAgentMeta(key) {
       if (key === 'po') {
         return {
@@ -1508,6 +1677,10 @@
       } else {
         statusText.textContent = 'Pending';
       }
+
+      // ── Skip Button (only show for running agents) ──
+      const skipBtn = document.getElementById('skipBtn');
+      skipBtn.style.display = status === 'running' ? '' : 'none';
 
       // ── Elapsed ──
       const elapsedEl = document.getElementById('detailElapsed');
@@ -1613,6 +1786,22 @@
         btn.textContent = 'Copied!';
         setTimeout(() => { btn.textContent = 'Copy'; }, 2000);
       });
+    }
+
+    function skipCurrentAgent() {
+      if (!openAgentKey) return;
+      if (!ws || ws.readyState !== 1) {
+        alert('Not connected to server');
+        return;
+      }
+      ws.send(JSON.stringify({ type: 'skip:agent', agent: openAgentKey }));
+      const btn = document.getElementById('skipBtn');
+      btn.textContent = '⏳ Skipping...';
+      btn.disabled = true;
+      setTimeout(() => {
+        btn.textContent = '⏭️ Skip';
+        btn.disabled = false;
+      }, 2000);
     }
 
     function formatDuration(ms) {
@@ -1770,7 +1959,7 @@
         countEl.textContent = cards.length;
 
         container.innerHTML = cards.map((card) => `
-          <div class="kanban-card ${card.agent || ''}">
+          <div class="kanban-card ${card.agent || ''}" onclick="openCardDetail('${escapeAttr(card.id)}')" title="Click to view details">
             <div class="kanban-card-id">${escapeHtml(card.id)}</div>
             <div class="kanban-card-title">${escapeHtml(card.title || 'Untitled')}</div>
           </div>

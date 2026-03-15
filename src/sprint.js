@@ -8,6 +8,7 @@
 import { writeFileSync, mkdirSync, existsSync } from 'fs';
 import { join, resolve } from 'path';
 import { callAgent, runDevAgent, runDevAgentForTask, runDevFixForTask, parseQaVerdict, parseReviewerVerdict, AGENTS, STAR_WARS_PERSONAS } from './agents.js';
+import { isSkipRequested, clearSkipRequest } from './web-server.js';
 
 // จำนวน dev สูงสุดที่รันพร้อมกันได้ — ตั้งผ่าน MAX_DEVS env var, default = ตามจำนวน tasks
 const MAX_PARALLEL_DEVS = parseInt(process.env.MAX_DEVS) || Infinity;
@@ -96,10 +97,17 @@ export async function runSprint(requirement, opts = {}) {
   sprintLog('po', 'Analyzing requirement and creating user stories',
     'Prioritize by user value and dependency order');
 
-  const poOutput = await callAgent('po',
-    `Requirement: ${requirement}\nMode: ${mode}`,
-    { persona: STAR_WARS_PERSONAS.po.identity }
-  );
+  let poOutput = '';
+  if (isSkipRequested?.('po')) {
+    sprintLog('po', '⏭️ Skipped by user');
+    clearSkipRequest?.();
+    poOutput = '[Skipped by user]';
+  } else {
+    poOutput = await callAgent('po',
+      `Requirement: ${requirement}\nMode: ${mode}`,
+      { persona: STAR_WARS_PERSONAS.po.identity }
+    );
+  }
   sprint.outputs.po = poOutput;
   onProgress({ type: 'output', agent: 'po', content: poOutput });
 
@@ -113,10 +121,17 @@ export async function runSprint(requirement, opts = {}) {
   sprintLog('tl', 'Designing architecture and breaking down dev tasks',
     'Chose layered architecture — testable, maintainable, maps well to team tasks');
 
-  const tlOutput = await callAgent('tl',
-    `Requirement: ${requirement}\n\nUser stories from PO:\n${poOutput}`,
-    { persona: STAR_WARS_PERSONAS.tl.identity }
-  );
+  let tlOutput = '';
+  if (isSkipRequested?.('tl')) {
+    sprintLog('tl', '⏭️ Skipped by user');
+    clearSkipRequest?.();
+    tlOutput = '[Skipped by user]';
+  } else {
+    tlOutput = await callAgent('tl',
+      `Requirement: ${requirement}\n\nUser stories from PO:\n${poOutput}`,
+      { persona: STAR_WARS_PERSONAS.tl.identity }
+    );
+  }
   sprint.outputs.tl = tlOutput;
   onProgress({ type: 'output', agent: 'tl', content: tlOutput });
   sprintLog('tl', 'Architecture defined. ADR logged.',
