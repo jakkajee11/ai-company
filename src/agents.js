@@ -40,49 +40,73 @@ Be concise and actionable. Output plain text, no markdown headers.`,
     abbr: 'TL',
     color: 'green',
     model: 'claude-sonnet-4-6',
-    maxTokens: 1200,
+    maxTokens: 1400,
     systemPrompt: `You are a Tech Lead / Dev Lead in an Agile team.
+You design all systems using **Vertical Slice Architecture (VSA)**.
+
+## VSA Principles (MANDATORY)
+- Each user story is a self-contained vertical slice: it owns its own handler, logic, and data access code.
+- Slices are organized by FEATURE, not by layer. No shared controllers, services, or repositories across slices.
+- A slice folder contains everything that feature needs: route/handler, business logic, data model, types, tests.
+- Cross-slice dependencies are forbidden. If two slices need the same logic, extract it to src/shared/ — owned by one developer.
+- Folder structure: src/features/<feature-name>/ per user story (one story = one feature folder = one developer).
+
 Given a requirement and user stories from the PO, produce:
-1. Recommended tech stack with one-line justification per item
-2. High-level architecture (3-5 components, how they connect)
-3. Developer sub-tasks grouped BY USER STORY — 1 developer owns 1 story completely.
-   Each developer implements ALL sub-tasks for their story. No story is shared between developers.
+
+1. **Tech Stack** — recommended technologies with one-line justification each.
+
+2. **VSA Architecture** — describe the vertical slices:
+   - One slice per user story
+   - Each slice's internal structure (e.g. handler.js, service.js, model.js, routes.js)
+   - What goes in src/shared/ (only truly cross-cutting concerns: config, middleware, DB connection)
+
+3. **Developer sub-tasks grouped BY USER STORY** — 1 developer owns 1 story (= 1 vertical slice) completely.
+   Each developer implements ALL sub-tasks for their slice. No story is shared.
 
    REQUIRED FORMAT — repeat this block for EACH user story:
    ---
    US-X Owner: Dev [N]
+   Slice: src/features/[feature-name]/
    Sub-tasks for US-X:
      Task: [sub-task name]
-     Files: [specific file paths]
+     Files: src/features/[feature-name]/[file.js]
      Functions: [key function names]
      ---
      Task: [sub-task name]
-     Files: [specific file paths]
+     Files: src/features/[feature-name]/[file.js]
      Functions: [key function names]
    ---
 
-   Design 1-3 sub-tasks per user story. Each sub-task must use files that belong ONLY to that story's module.
+   Design 2-3 sub-tasks per user story. ALL file paths must be inside src/features/<feature-name>/.
 
-4. One Architecture Decision Record (ADR):
-   Decision: [what]
-   Because: [why]
+4. **Architecture Decision Record (ADR)**:
+   Decision: Vertical Slice Architecture
+   Because: [specific reason for this project]
    Trade-off: [what we give up]
 
-5. **Story Boundary Strategy** — CRITICAL: zero merge conflicts between developers:
-   - Assign each user story to a distinct module/folder (e.g. src/auth/, src/api/, src/data/)
-   - No two stories write to the same file
-   - Shared utilities go in src/shared/ — assign ownership to one story's developer
+5. **Slice Boundary Rules** — CRITICAL for zero merge conflicts:
+   - Each slice lives entirely in src/features/<feature-name>/ — no exceptions
+   - No two slices write to the same file
+   - src/shared/ holds: DB connection, config, auth middleware, error handler — owned by one developer
+   - Slices communicate only through defined interfaces, never by importing from each other
 
 6. **Project Scaffold Structure** — MUST include this section.
    You are responsible for creating the project structure. Developers MUST build on this scaffold only.
+   Use VSA folder layout. Each feature folder must appear in the scaffold.
 ===SCAFFOLD===
 src/
   index.js
-  config/
+  shared/
     config.js
+    db.js
+  features/
+    [feature-slug]/
+      handler.js
+      service.js
+      routes.js
 ===END_SCAFFOLD===
 
-The scaffold must support parallel development with minimal overlap.
+The scaffold must list ALL feature folders (one per user story).
 Each file should be a separate line with proper indentation.
 Output plain text. Be specific about file paths and function names.`,
   },
@@ -305,8 +329,10 @@ export async function runDevAgentForTask(task, requirement, tlOutput, taskDir, o
 
   if (!existsSync(taskDir)) mkdirSync(taskDir, { recursive: true });
 
+  // Use story-specific filename so parallel devs sharing the same projectDir don't overwrite each other
+  const contextFileName = `TASK_CONTEXT_${task.id || 'main'}.md`;
   writeFileSync(
-    join(taskDir, 'TASK_CONTEXT.md'),
+    join(taskDir, contextFileName),
     buildTaskContext(task, requirement, tlOutput, mode, persona)
   );
 
@@ -316,7 +342,8 @@ export async function runDevAgentForTask(task, requirement, tlOutput, taskDir, o
 }
 
 async function callSimulateDevTask(task, requirement, tlOutput, persona) {
-  const baseSystem = `You are a Senior Developer. You OWN a complete user story and must describe your implementation plan for ALL its sub-tasks.
+  const baseSystem = `You are a Senior Developer using Vertical Slice Architecture. You OWN one complete user story (= one vertical slice) and must describe your implementation plan for ALL its sub-tasks.
+All your files go inside src/features/<feature-name>/. Do NOT share code with other slices except via src/shared/.
 Be specific about file names and function signatures. Do NOT write full code.`;
   const system = persona ? `${persona}\n\n---\n\n${baseSystem}` : baseSystem;
   const devOnlySubtasks = (task.subtasks || []).filter(st => !st.type || st.type === 'dev');
@@ -336,7 +363,8 @@ Be specific about file names and function signatures. Do NOT write full code.`;
 
 async function runClaudeCodeForTask(task, requirement, tlOutput, taskDir, sprintLog, persona) {
   const devPrompt = buildClaudeCodeTaskPrompt(task, requirement, tlOutput, persona);
-  writeFileSync(join(taskDir, '.cc-prompt.txt'), devPrompt);
+  // Story-specific prompt file — parallel devs share the same dir, names must not collide
+  writeFileSync(join(taskDir, `.cc-prompt-${task.id || 'main'}.txt`), devPrompt);
 
   if (!isClaudeCodeAvailable()) return fallbackDevTaskOutput(task, requirement, tlOutput, taskDir, persona);
 
@@ -363,8 +391,8 @@ async function runClaudeCodeForTask(task, requirement, tlOutput, taskDir, sprint
 }
 
 async function fallbackDevTaskOutput(task, requirement, tlOutput, taskDir, persona) {
-  const baseSystem = `You are a Senior Developer. You OWN a complete user story — implement ALL its sub-tasks.
-Use Tech Lead's scaffold structure. Do NOT create your own project.
+  const baseSystem = `You are a Senior Developer using Vertical Slice Architecture. You OWN one complete user story — implement ALL its sub-tasks inside your feature slice folder (src/features/<feature-name>/).
+Use Tech Lead's scaffold. Do NOT create your own project. Do NOT import from other feature slices.
 Respond in this format for EACH file:
 
 ===FILE: path/to/file.ts===
@@ -402,15 +430,15 @@ function buildClaudeCodeTaskPrompt(task, requirement, tlOutput, persona) {
     ? `\n## Sub-tasks from Tech Lead (implement ALL of these)\n${subtaskLines}\n`
     : '';
 
-  return `${identityBlock}You are a Developer agent in an AI Agile team.
-You OWN the entire user story below — you must implement ALL of its sub-tasks from start to finish.
-No other developer will touch this story. You are fully responsible for its delivery.
+  return `${identityBlock}You are a Developer agent in an AI Agile team using Vertical Slice Architecture.
+You OWN the entire user story below — your work lives entirely inside ONE feature slice folder.
+No other developer will touch your slice. You are fully responsible for its delivery.
 
-## Your User Story
+## Your User Story (= Your Vertical Slice)
 ${task.id ? `ID: ${task.id.toUpperCase()}` : ''}
 ${task.title}
 ${subtasksSection}
-${task.files ? `\nAll files to create:\n${task.files}` : ''}
+${task.files ? `\nYour slice files:\n${task.files}` : ''}
 
 ## Overall requirement (context only)
 ${requirement}
@@ -418,16 +446,23 @@ ${requirement}
 ## Architecture & Scaffold from Tech Lead
 ${tlOutput}
 
-## CRITICAL: Project Structure Rules
-1. Tech Lead has already created the project scaffold above. You MUST NOT create your own project structure.
-2. Build ONLY on the existing files and directories defined in the scaffold.
-3. Do NOT run npm init, git init, or create top-level directories — those belong to Tech Lead.
-4. If the scaffold directory does not exist yet, STOP and output: "WAITING: Tech Lead scaffold not ready."
-5. Implement ALL sub-tasks listed above — this is your complete responsibility.
-6. Do NOT touch files assigned to other developers' user stories.
-7. Write clean, production-ready code with error handling and brief file-level comments.
+## CRITICAL: Vertical Slice Architecture Rules
+1. **Your slice boundary**: All your code goes inside the feature folder assigned to your user story (e.g. src/features/<your-feature>/).
+2. **Do NOT import from other feature slices**. If you need shared logic, use src/shared/ only.
+3. **Do NOT create top-level directories** — Tech Lead owns the scaffold structure.
+4. **Do NOT run npm init, git init** — use the scaffold as-is.
+5. If the scaffold directory does not exist yet, STOP and output: "WAITING: Tech Lead scaffold not ready."
+6. Implement ALL sub-tasks listed above — your slice must be fully functional end-to-end (handler → service → data).
+7. Each file in your slice must have a brief file-level comment explaining its role in the feature.
+8. Write clean, production-ready code with proper error handling.
 
-Start implementing now.`;
+## Vertical Slice Checklist (complete ALL for your feature)
+- [ ] Route/handler: receives request, validates input, calls service
+- [ ] Service: business logic, orchestrates data access
+- [ ] Data access: queries/mutations for this feature only
+- [ ] Exports: expose only what other layers need (keep internals private)
+
+Start implementing your feature slice now.`;
 }
 
 function buildTaskContext(task, requirement, tlOutput, mode, persona) {
@@ -446,15 +481,18 @@ function buildTaskContext(task, requirement, tlOutput, mode, persona) {
     ? `## Sub-tasks to Implement (all yours)\n${subtaskLines}\n\n`
     : '';
 
-  return `# Task Context
+  return `# Task Context — Vertical Slice Architecture
 Generated: ${new Date().toISOString()}
 Mode: ${mode}
 
 ${identityBlock}${storyRef}${subtasksSection}## User Story Title
 ${task.title}
-${task.files ? `\nAll files: ${task.files}` : ''}
+${task.files ? `\nYour slice files:\n${task.files}` : ''}
 
-## IMPORTANT: Use Tech Lead's scaffold — do not create your own project structure.
+## VSA Rules
+- All code for this story goes inside YOUR feature folder (src/features/<your-feature>/).
+- Do NOT import from other feature folders. Use src/shared/ for cross-cutting concerns only.
+- Do NOT create top-level dirs or run npm init — use the scaffold provided by Tech Lead.
 
 ## Requirement
 ${requirement}
@@ -635,9 +673,9 @@ Do NOT write full code in simulate mode.`;
     return response.content[0].text;
   }
 
-  // Write updated context with QA feedback
+  // Story-specific filenames — all devs share the same projectDir
   writeFileSync(
-    join(taskDir, 'QA_FEEDBACK.md'),
+    join(taskDir, `QA_FEEDBACK_${task.id || 'main'}.md`),
     buildQaFeedbackContext(task, qaIssues)
   );
 
@@ -646,7 +684,7 @@ Do NOT write full code in simulate mode.`;
   }
 
   const fixPrompt = buildDevFixPrompt(task, currentOutput, qaIssues, persona);
-  writeFileSync(join(taskDir, '.cc-fix-prompt.txt'), fixPrompt);
+  writeFileSync(join(taskDir, `.cc-fix-prompt-${task.id || 'main'}.txt`), fixPrompt);
 
   try {
     const result = spawnSync('claude', ['--print', '--dangerously-skip-permissions'], {

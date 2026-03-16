@@ -247,10 +247,13 @@ export async function runSprint(requirement, opts = {}) {
     onProgress({ type: 'dev:waiting', reason: 'Waiting for project scaffold from Tech Lead' });
     sprintLog('tl', '⚠ Devs blocked: No scaffold available from TL');
 
-    // Create default scaffold as fallback
-    sprintLog('tl', 'Creating default scaffold structure as fallback');
-    const defaultDirs = ['src', 'src/config', 'src/utils'];
-    const defaultFiles = ['src/index.js', 'package.json', 'README.md'];
+    // Create default VSA scaffold as fallback
+    sprintLog('tl', 'Creating default VSA scaffold structure as fallback');
+    const featureDirs = userStories.map(s =>
+      `src/features/${s.id.replace(/[^a-z0-9]/gi, '-')}`
+    );
+    const defaultDirs = ['src', 'src/shared', ...featureDirs];
+    const defaultFiles = ['src/index.js', 'src/shared/config.js', 'package.json', 'README.md'];
 
     for (const dir of defaultDirs) {
       const fullPath = join(projectDir, dir);
@@ -296,8 +299,8 @@ export async function runSprint(requirement, opts = {}) {
         mode === 'execute' ? 'Building on Tech Lead scaffold — not creating own project' : 'Simulation mode'
       );
 
-      // แต่ละ dev ได้ directory ของตัวเอง (ถ้ามีหลาย dev)
-      const taskDir = numDevs > 1 ? join(projectDir, key) : projectDir;
+      // ทุก dev ทำงานใน projectDir เดียวกัน — VSA แยก conflict ด้วย src/features/<slice>/
+      const taskDir = projectDir;
 
       const output = await runDevAgentForTask(task, requirement, tlOutput, taskDir, {
         mode,
@@ -745,8 +748,10 @@ export async function runSprint(requirement, opts = {}) {
       if (mode !== 'simulate' && existsSync(devResult.taskDir)) {
         const testDir = join(devResult.taskDir, '__tests__');
         if (!existsSync(testDir)) mkdirSync(testDir, { recursive: true });
-        writeFileSync(join(testDir, 'sprint.test.js'), verdict.tests || qaOutput);
-        sprintLog(qaKey, `Tests written to ${devKey}/__tests__/sprint.test.js`);
+        const storyId = getStoryId(devResult.task);
+        const testFileName = `${storyId || devKey}.test.js`;
+        writeFileSync(join(testDir, testFileName), verdict.tests || qaOutput);
+        sprintLog(qaKey, `Tests written to __tests__/${testFileName}`);
       } else if (mode === 'simulate') {
         sprintLog(qaKey, 'Test plan generated (simulation — no files written)');
       }
