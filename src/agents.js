@@ -6,15 +6,78 @@
  *               เขียน code จริง, สร้าง files จริง ใน project directory
  */
 
+// Load environment variables from .env file FIRST
+import 'dotenv/config';
+
 import Anthropic from '@anthropic-ai/sdk';
-import { execSync, spawnSync } from 'child_process';
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
-import { join, resolve } from 'path';
+import { spawn } from 'child_process';
+import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs';
+import { join, resolve, relative } from 'path';
+import { promisify } from 'util';
+
+// ─── Async spawn helper (non-blocking) ────────────────────────────────────────
+// Wraps spawn in a Promise so it doesn't block the Node.js event loop
+function spawnAsync(command, args, options) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      ...options,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout?.on('data', (data) => { stdout += data; });
+    child.stderr?.on('data', (data) => { stderr += data; });
+
+    child.on('error', (error) => { reject(error); });
+
+    child.on('close', (code) => {
+      resolve({ status: code, stdout, stderr });
+    });
+
+    // Write to stdin if input provided
+    if (options?.input) {
+      child.stdin?.write(options.input);
+      child.stdin?.end();
+    }
+  });
+}
+
+// ─── Sprint temp-file directory ────────────────────────────────────────────────
+// ไฟล์ชั่วคราว (prompts, context, QA feedback) ถูกเขียนที่นี่แทน projectDir
+// sprint.js จะ set ค่านี้ก่อน sprint และลบทั้ง directory หลัง sprint เสร็จ
+
+let _sprintTmpDir = null;
+
+export function setSprintTmpDir(dir) {
+  _sprintTmpDir = dir;
+  if (dir) mkdirSync(dir, { recursive: true });
+}
+
+/** คืน path สำหรับ temp file ของ sprint นี้ */
+function tmpPath(filename) {
+  const base = _sprintTmpDir || null;
+  if (!base) return null;
+  return join(base, filename);
+}
 
 // ─── Anthropic client ──────────────────────────────────────────────────────────
 
-const client = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY,
+// Auth resolution (priority order):
+//   1. ANTHROPIC_API_KEY  — direct API key (in .env or shell)
+//   2. CLAUDE_CODE_OAUTH_TOKEN — SDK bearer auth (set automatically inside Claude Code)
+//   3. claude CLI subprocess  — uses Claude Code Pro login, no API key needed
+const _apiKey   = process.env.ANTHROPIC_API_KEY || null;
+const _oauthTok = process.env.CLAUDE_CODE_OAUTH_TOKEN || null;
+const _useCliAuth = !_apiKey && !_oauthTok;  // fall back to `claude --print` subprocess
+
+// Must pass apiKey: null explicitly when using OAuth token, otherwise the SDK
+// reads ANTHROPIC_API_KEY="" (empty string) from env and blocks the bearer auth path.
+const client = _useCliAuth ? null : new Anthropic({
+  apiKey:    _apiKey ?? null,
+  ...(_oauthTok && !_apiKey ? { authToken: _oauthTok } : {}),
+  timeout: 180_000,
 });
 
 // ─── Agent definitions ─────────────────────────────────────────────────────────
@@ -274,20 +337,15 @@ Your verdict is final. Your standards are absolute. Weakness in code, you will f
   ],
 };
 
-// ─── Non-DEV agents: call Anthropic API directly ──────────────────────────────
+// ─── Non-DEV agents: Anthropic SDK or claude CLI subprocess ───────────────────
 
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 529]);
 const MAX_RETRIES = 3;
 const BASE_DELAY_MS = 1000;
 
-export async function callAgent(agentKey, userMessage, opts = {}) {
-  const agent = AGENTS[agentKey];
-  // Prepend Star Wars persona identity before the technical system prompt
-  const systemPrompt = opts.persona
-    ? `${opts.persona}\n\n---\n\n${agent.systemPrompt}`
-    : agent.systemPrompt;
+/** Call agent via Anthropic SDK (when API key or OAuth token is available) */
+async function callAgentSdk(agent, systemPrompt, userMessage) {
   let lastError;
-
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const response = await client.messages.create({
@@ -301,16 +359,39 @@ export async function callAgent(agentKey, userMessage, opts = {}) {
       lastError = err;
       const status = err.status ?? err.statusCode;
       const isRetryable = RETRYABLE_STATUS.has(status) || err.message?.includes('timeout');
-
       if (!isRetryable || attempt === MAX_RETRIES) break;
-
-      const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1); // 1s, 2s, 4s
+      const delay = BASE_DELAY_MS * Math.pow(2, attempt - 1);
       console.error(`[${agent.abbr}] API error (${status ?? err.message}) — retry ${attempt}/${MAX_RETRIES - 1} in ${delay}ms`);
       await new Promise(r => setTimeout(r, delay));
     }
   }
-
   throw new Error(`[${agent.abbr}] Failed after ${MAX_RETRIES} attempts: ${lastError?.message}`);
+}
+
+/** Call agent via claude CLI subprocess (Claude Code Pro — no API key needed) */
+async function callAgentCli(agent, systemPrompt, userMessage) {
+  // Embed system instructions in the prompt — claude CLI reads from stdin
+  const prompt = `${systemPrompt}\n\n---\n\n${userMessage}`;
+  const result = await spawnAsync('claude', ['--print', '--dangerously-skip-permissions'], {
+    input: prompt,
+    timeout: 180_000,
+    env: { ...process.env },
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) throw new Error(result.stderr?.trim() || `claude CLI exit code ${result.status}`);
+  return result.stdout.trim();
+}
+
+export async function callAgent(agentKey, userMessage, opts = {}) {
+  const agent = AGENTS[agentKey];
+  const systemPrompt = opts.persona
+    ? `${opts.persona}\n\n---\n\n${agent.systemPrompt}`
+    : agent.systemPrompt;
+
+  if (_useCliAuth) {
+    return callAgentCli(agent, systemPrompt, userMessage);
+  }
+  return callAgentSdk(agent, systemPrompt, userMessage);
 }
 
 // ─── DEV agent: run Claude Code as subprocess ─────────────────────────────────
@@ -329,12 +410,11 @@ export async function runDevAgentForTask(task, requirement, tlOutput, taskDir, o
 
   if (!existsSync(taskDir)) mkdirSync(taskDir, { recursive: true });
 
-  // Use story-specific filename so parallel devs sharing the same projectDir don't overwrite each other
+  // Write TASK_CONTEXT to sprint tmp dir (not projectDir) — Claude Code reads context
+  // from the inline stdin prompt, so this file is for human debugging only.
   const contextFileName = `TASK_CONTEXT_${task.id || 'main'}.md`;
-  writeFileSync(
-    join(taskDir, contextFileName),
-    buildTaskContext(task, requirement, tlOutput, mode, persona)
-  );
+  const ctxPath = tmpPath(contextFileName) || join(taskDir, contextFileName);
+  writeFileSync(ctxPath, buildTaskContext(task, requirement, tlOutput, mode, persona));
 
   if (mode === 'simulate') return await callSimulateDevTask(task, requirement, tlOutput, persona);
 
@@ -363,15 +443,15 @@ Be specific about file names and function signatures. Do NOT write full code.`;
 
 async function runClaudeCodeForTask(task, requirement, tlOutput, taskDir, sprintLog, persona) {
   const devPrompt = buildClaudeCodeTaskPrompt(task, requirement, tlOutput, persona);
-  // Story-specific prompt file — parallel devs share the same dir, names must not collide
-  writeFileSync(join(taskDir, `.cc-prompt-${task.id || 'main'}.txt`), devPrompt);
+  // Write prompt file to tmp dir for human inspection — not read by Claude Code (sent via stdin)
+  const promptPath = tmpPath(`.cc-prompt-${task.id || 'main'}.txt`) || join(taskDir, `.cc-prompt-${task.id || 'main'}.txt`);
+  writeFileSync(promptPath, devPrompt);
 
-  if (!isClaudeCodeAvailable()) return fallbackDevTaskOutput(task, requirement, tlOutput, taskDir, persona);
+  if (!await isClaudeCodeAvailable()) return fallbackDevTaskOutput(task, requirement, tlOutput, taskDir, persona);
 
   try {
-    const result = spawnSync('claude', ['--print', '--dangerously-skip-permissions'], {
+    const result = await spawnAsync('claude', ['--print', '--dangerously-skip-permissions'], {
       input: devPrompt,
-      encoding: 'utf8',
       cwd: taskDir,
       timeout: 120_000,
       env: { ...process.env, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY },
@@ -673,23 +753,21 @@ Do NOT write full code in simulate mode.`;
     return response.content[0].text;
   }
 
-  // Story-specific filenames — all devs share the same projectDir
-  writeFileSync(
-    join(taskDir, `QA_FEEDBACK_${task.id || 'main'}.md`),
-    buildQaFeedbackContext(task, qaIssues)
-  );
+  // Write QA feedback to tmp dir — content is passed inline to Claude Code via stdin
+  const qaFbPath = tmpPath(`QA_FEEDBACK_${task.id || 'main'}.md`) || join(taskDir, `QA_FEEDBACK_${task.id || 'main'}.md`);
+  writeFileSync(qaFbPath, buildQaFeedbackContext(task, qaIssues));
 
-  if (!isClaudeCodeAvailable()) {
+  if (!await isClaudeCodeAvailable()) {
     return await fallbackDevFixOutput(task, currentOutput, qaIssues, taskDir, persona);
   }
 
   const fixPrompt = buildDevFixPrompt(task, currentOutput, qaIssues, persona);
-  writeFileSync(join(taskDir, `.cc-fix-prompt-${task.id || 'main'}.txt`), fixPrompt);
+  const fixPromptPath = tmpPath(`.cc-fix-prompt-${task.id || 'main'}.txt`) || join(taskDir, `.cc-fix-prompt-${task.id || 'main'}.txt`);
+  writeFileSync(fixPromptPath, fixPrompt);
 
   try {
-    const result = spawnSync('claude', ['--print', '--dangerously-skip-permissions'], {
+    const result = await spawnAsync('claude', ['--print', '--dangerously-skip-permissions'], {
       input: fixPrompt,
-      encoding: 'utf8',
       cwd: taskDir,
       timeout: 120_000,
       env: { ...process.env, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY },
@@ -840,7 +918,7 @@ async function runClaudeCode(projectDir, requirement, tlOutput, sprintLog) {
   writeFileSync(promptFile, devPrompt);
 
   // Check if claude CLI is available
-  const claudeAvailable = isClaudeCodeAvailable();
+  const claudeAvailable = await isClaudeCodeAvailable();
   if (!claudeAvailable) {
     return fallbackDevOutput(requirement, tlOutput, projectDir);
   }
@@ -850,12 +928,11 @@ async function runClaudeCode(projectDir, requirement, tlOutput, sprintLog) {
   try {
     // Run: claude --print < prompt.txt
     // --print = non-interactive mode, outputs result to stdout
-    const result = spawnSync(
+    const result = await spawnAsync(
       'claude',
       ['--print', '--dangerously-skip-permissions'],
       {
         input: devPrompt,
-        encoding: 'utf8',
         cwd: projectDir,
         timeout: 120_000,           // 2 min max
         env: {
@@ -958,9 +1035,9 @@ ${mode === 'execute'
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
-function isClaudeCodeAvailable() {
+async function isClaudeCodeAvailable() {
   try {
-    const result = spawnSync('claude', ['--version'], { encoding: 'utf8', timeout: 5000 });
+    const result = await spawnAsync('claude', ['--version'], { timeout: 5000 });
     return result.status === 0;
   } catch {
     return false;
@@ -969,10 +1046,22 @@ function isClaudeCodeAvailable() {
 
 function listCreatedFiles(dir) {
   try {
-    const result = execSync(`find ${dir} -type f -not -name '.*' -not -name 'SPRINT_CONTEXT.md'`, {
-      encoding: 'utf8',
-    });
-    return result.trim().split('\n').filter(Boolean).map(f => f.replace(dir + '/', ''));
+    const files = [];
+    function walk(d) {
+      if (!existsSync(d)) return;
+      const entries = readdirSync(d);
+      for (const entry of entries) {
+        const fullPath = join(d, entry);
+        const stat = statSync(fullPath);
+        if (stat.isDirectory()) {
+          walk(fullPath);
+        } else if (stat.isFile() && !entry.startsWith('.') && entry !== 'SPRINT_CONTEXT.md') {
+          files.push(relative(dir, fullPath));
+        }
+      }
+    }
+    walk(dir);
+    return files;
   } catch {
     return [];
   }

@@ -5,9 +5,10 @@
  * Manages state, logging, and Kanban output
  */
 
-import { writeFileSync, mkdirSync, existsSync } from 'fs';
+import { writeFileSync, mkdirSync, existsSync, rmSync } from 'fs';
 import { join, resolve } from 'path';
-import { callAgent, runDevAgent, runDevAgentForTask, runDevFixForTask, parseQaVerdict, parseReviewerVerdict, parseAndCreateScaffold, designQaSubtasks, AGENTS, STAR_WARS_PERSONAS } from './agents.js';
+import { tmpdir } from 'os';
+import { callAgent, runDevAgent, runDevAgentForTask, runDevFixForTask, parseQaVerdict, parseReviewerVerdict, parseAndCreateScaffold, designQaSubtasks, setSprintTmpDir, AGENTS, STAR_WARS_PERSONAS } from './agents.js';
 import { isSkipRequested, clearSkipRequest } from './web-server.js';
 
 // จำนวน dev สูงสุดที่รันพร้อมกันได้ — ตั้งผ่าน MAX_DEVS env var, default = ตามจำนวน tasks
@@ -54,6 +55,10 @@ export async function runSprint(requirement, opts = {}) {
     scaffoldFiles: [],    // ไฟล์ที่สร้างจาก TL scaffold
     scaffoldReady: false, // สถานะ scaffold creation
   };
+
+  // Set up sprint-scoped tmp dir in system temp (outside mounted workspace — deletable)
+  const sprintTmpDir = join(tmpdir(), `ai-sprint-${sprint.id}`);
+  setSprintTmpDir(sprintTmpDir);
 
   // Notify progress bar to initialize
   onProgress({ type: 'sprint:start', sprint });
@@ -784,8 +789,29 @@ export async function runSprint(requirement, opts = {}) {
   if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true });
   saveSprint(sprint, outputDir);
 
+  // Clean up sprint tmp dir (lives in system /tmp — deletable even on mounted workspaces)
+  cleanupTempFiles(sprintTmpDir);
+  setSprintTmpDir(null); // reset for next sprint
+
   onProgress({ type: 'done', sprint });
   return sprint;
+}
+
+// ─── Post-sprint cleanup ───────────────────────────────────────────────────────
+
+/**
+ * ลบ sprint tmp directory ทั้งหมด (อยู่ใน /tmp ซึ่งลบได้เสมอ)
+ * ไดเรกทอรีนี้เก็บไฟล์ชั่วคราวที่ agents สร้างระหว่าง sprint เท่านั้น:
+ *   TASK_CONTEXT_*.md, QA_FEEDBACK_*.md, .cc-prompt-*.txt, .cc-fix-prompt-*.txt
+ */
+function cleanupTempFiles(sprintTmpDir) {
+  if (!sprintTmpDir || !existsSync(sprintTmpDir)) return;
+  try {
+    rmSync(sprintTmpDir, { recursive: true, force: true });
+    console.log(`[cleanup] Removed sprint tmp dir: ${sprintTmpDir}`);
+  } catch (err) {
+    console.warn(`[cleanup] Warning: could not remove sprint tmp dir: ${err.message}`);
+  }
 }
 
 // ─── Save sprint artifacts ─────────────────────────────────────────────────────

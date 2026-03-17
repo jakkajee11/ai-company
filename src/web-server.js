@@ -50,6 +50,13 @@ let sprintState = {
 
 let wss = null;
 let httpServer = null;
+let _sprintStartHandler = null;
+
+// ─── Sprint Handler Registration ─────────────────────────────────────────────
+
+export function setSprintHandler(fn) {
+  _sprintStartHandler = fn;
+}
 
 // ─── Skip Agent Control ───────────────────────────────────────────────────────
 
@@ -109,12 +116,55 @@ export function startWebServer(port = 3456) {
 // ─── HTTP Handler ─────────────────────────────────────────────────────────────
 
 function handleHTTPRequest(req, res) {
-  const url = req.url === '/' ? '/dashboard.html' : req.url;
+  // Strip query string / hash so route matching is always clean
+  const urlPath = (req.url || '/').split('?')[0].split('#')[0];
+  const url = urlPath === '/' ? '/dashboard.html' : urlPath;
 
   // API endpoint for current state
   if (url === '/api/state') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(sprintState));
+    return;
+  }
+
+  // API endpoint to start a sprint from the UI
+  if (url === '/api/sprint/start' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (chunk) => { body += chunk; });
+    req.on('end', () => {
+      try {
+        const { requirement, mode } = JSON.parse(body || '{}');
+
+        if (sprintState.status === 'running') {
+          res.writeHead(409, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'A sprint is already running' }));
+          return;
+        }
+        if (!requirement?.trim()) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'requirement is required' }));
+          return;
+        }
+        if (!_sprintStartHandler) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Sprint handler not configured' }));
+          return;
+        }
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+
+        // Run sprint asynchronously
+        _sprintStartHandler(requirement.trim(), (mode || 'execute')).catch((err) => {
+          console.error('Sprint error:', err.message);
+          sprintState.status = 'error';
+          broadcast({ type: 'error', error: err.message, state: sprintState });
+        });
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Invalid JSON body' }));
+      }
+    });
     return;
   }
 

@@ -16,7 +16,7 @@ import { resolve, join } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { runSprint } from './sprint.js';
 import { AGENTS } from './agents.js';
-import { startWebServer, createWebProgressHandler, resetState } from './web-server.js';
+import { startWebServer, createWebProgressHandler, resetState, setSprintHandler } from './web-server.js';
 
 // ─── ANSI colors (simple, no deps needed) ──────────────────────────────────────
 
@@ -195,6 +195,79 @@ async function main() {
 
   printBanner();
 
+  // ── Start web server if --web flag ────────────────────────────────────────────
+  // When --web is used without a requirement, we start the server and wait for the
+  // UI to trigger a sprint via POST /api/sprint/start
+  if (webMode) {
+    print('sys', `Dashboard: ${C.sys}http://localhost:${webPort}${C.reset}`);
+    console.log();
+
+    try {
+      await startWebServer(webPort);
+
+      // Helper: run a sprint and pipe its events to both terminal and web dashboard
+      async function runSprintWithProgress(req, sprintMode) {
+        // Load PRD content if --prd was given
+        let prdContentLocal = '';
+        if (prdFile && existsSync(prdFile)) {
+          prdContentLocal = readFileSync(prdFile, 'utf8').slice(0, 2000);
+        }
+        const fullReq = prdContentLocal
+          ? `${req}\n\nContext from PRD:\n${prdContentLocal}`
+          : req;
+
+        const slug = req.toLowerCase().replace(/[^a-z0-9]+/g, '-').slice(0, 40);
+        const outDir = resolve(`output/${slug}`);
+        const projDir = join(outDir, 'project');
+        _outputDir = outDir;
+        _projectDir = projDir;
+
+        print('sys', `Mode: ${C.bold}${sprintMode}${C.reset}`);
+        print('sys', `Output: ${C.gray}${outDir}${C.reset}`);
+
+        resetState(fullReq, sprintMode);
+        const webHandler = createWebProgressHandler();
+
+        await runSprint(fullReq, {
+          mode: sprintMode,
+          projectDir: projDir,
+          outputDir: outDir,
+          onProgress: (event) => {
+            handleProgress(event);
+            webHandler(event);
+          },
+        });
+      }
+
+      // Register handler so UI can trigger sprints
+      setSprintHandler(runSprintWithProgress);
+
+      if (requirement) {
+        // Requirement given on command line — run immediately
+        await runSprintWithProgress(requirement, mode);
+        // Keep server alive after sprint so dashboard remains accessible
+        print('sys', `${C.bold}Sprint complete.${C.reset} Dashboard still live at ${C.sys}http://localhost:${webPort}${C.reset}`);
+        console.log(`  ${C.gray}Press Ctrl+C to stop${C.reset}\n`);
+        // HTTP server keeps Node running
+      } else {
+        // No requirement — wait for UI
+        print('sys', `${C.bold}Ready.${C.reset} Open the dashboard to start a sprint.`);
+        console.log(`  ${C.gray}Press Ctrl+C to stop${C.reset}\n`);
+        // Keep process alive (HTTP server already keeps Node running)
+      }
+    } catch (err) {
+      if (err.message?.includes('already running')) {
+        // Sprint conflict — already handled by API endpoint
+      } else {
+        console.error(`\n${C.error}✗ Sprint failed: ${err.message}${C.reset}`);
+        if (process.env.DEBUG) console.error(err.stack);
+        process.exit(1);
+      }
+    }
+    return;
+  }
+
+  // ── Non-web mode ──────────────────────────────────────────────────────────────
   // Interactive mode if no requirement given
   if (!requirement) {
     requirement = await promptRequirement();
@@ -229,24 +302,7 @@ async function main() {
   print('sys', `Mode: ${C.bold}${mode}${C.reset}`);
   print('sys', `Output: ${C.gray}${outputDir}${C.reset}`);
 
-  // ── Start web server if --web flag ────────────────────────────────────────────
-  let webProgressHandler = null;
-  if (webMode) {
-    print('sys', `Dashboard: ${C.sys}http://localhost:${webPort}${C.reset}`);
-    console.log();
-
-    try {
-      await startWebServer(webPort);
-      resetState(fullRequirement, mode);
-      webProgressHandler = createWebProgressHandler();
-    } catch (err) {
-      console.error(`${C.warn}Warning: Could not start web server: ${err.message}${C.reset}`);
-      console.error(`${C.gray}Continuing without web dashboard...${C.reset}`);
-      webMode = false;
-    }
-  } else {
-    console.log();
-  }
+  console.log();
 
   // ── Run sprint ────────────────────────────────────────────────────────────────
   try {
@@ -254,14 +310,7 @@ async function main() {
       mode,
       projectDir,
       outputDir,
-      onProgress: (event) => {
-        // Terminal progress
-        handleProgress(event);
-        // Web dashboard progress
-        if (webProgressHandler) {
-          webProgressHandler(event);
-        }
-      },
+      onProgress: handleProgress,
     });
   } catch (err) {
     console.error(`\n${C.error}✗ Sprint failed: ${err.message}${C.reset}`);
@@ -494,6 +543,11 @@ ${C.bold}Output:${C.reset}
 
 ${C.bold}Environment:${C.reset}
   ANTHROPIC_API_KEY    Required — used by PO, TL, QA agents and fallback DEV
+
+${C.bold}Setup:${C.reset}
+  1. Copy .env.example to .env
+  2. Add your ANTHROPIC_API_KEY to .env
+  3. Run: node src/cli.js --web
 
 ${C.bold}Examples:${C.reset}
   node src/cli.js "Build JWT auth API"
